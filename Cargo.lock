@@ -4577,6 +4577,7 @@ version = "2.2.2"
 dependencies = [
  "base64 0.22.1",
  "image",
+ "libc",
  "lofty",
  "serde",
  "serde_json",
@@ -4607,6 +4608,7 @@ dependencies = [
 name = "westplay-maps"
 version = "2.2.2"
 dependencies = [
+ "libc",
  "mimalloc",
  "serde_json",
  "westplay-mapdata",
@@ -4619,6 +4621,7 @@ dependencies = [
 name = "westplay-plugin"
 version = "2.2.2"
 dependencies = [
+ "libc",
  "minhook",
  "westplay-shared",
  "windows",
@@ -4642,6 +4645,7 @@ dependencies = [
 name = "westplay-shared"
 version = "2.2.2"
 dependencies = [
+ "libc",
  "serde",
  "windows",
 ]
