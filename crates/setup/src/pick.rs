@@ -1,22 +1,28 @@
-//! Windows' own pickers: a folder (the player showing WestPlay where the game is when it isn't found, an icon
+//! Pickers: a folder (the player showing WestPlay where the game is when it isn't found, an icon
 //! set's folder), and files (wallpapers, an icon set's .zip).
 
 use std::path::PathBuf;
 
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{
     FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
     IShellItem, SIGDN_FILESYSPATH,
 };
+#[cfg(windows)]
 use windows::core::{HSTRING, PCWSTR};
 
 /// Asks for a folder, over the window `owner` (its handle; 0 for none), titled `title`: the folder chosen, or
 /// `None` if the player cancelled. Blocks until they've chosen; runs on a thread of its own (the dialog needs
 /// COM, set up there as it wants).
+#[cfg(windows)]
 pub fn folder(owner: isize, title: &str) -> Option<PathBuf> {
     let title = title.to_owned();
     on_com_thread(move || {
@@ -27,8 +33,40 @@ pub fn folder(owner: isize, title: &str) -> Option<PathBuf> {
     .next()
 }
 
+/// Asks for a folder on Unix/Linux using desktop dialogs (zenity/kdialog).
+#[cfg(unix)]
+pub fn folder(_owner: isize, title: &str) -> Option<PathBuf> {
+    if let Ok(output) = std::process::Command::new("zenity")
+        .arg("--file-selection")
+        .arg("--directory")
+        .arg(format!("--title={title}"))
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                return Some(PathBuf::from(path_str));
+            }
+        }
+    }
+    if let Ok(output) = std::process::Command::new("kdialog")
+        .arg("--getexistingdirectory")
+        .arg(format!("--title={title}"))
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                return Some(PathBuf::from(path_str));
+            }
+        }
+    }
+    None
+}
+
 /// Asks for files, over the window `owner`, titled `title`: those of the kinds `extensions` (`["png",
 /// "jpg"]`, shown as `kinds`), one or (`several`) more. None if the player cancelled.
+#[cfg(windows)]
 pub fn files(owner: isize, title: &str, kinds: &str, extensions: &[&str], several: bool) -> Vec<PathBuf> {
     let (title, kinds) = (title.to_owned(), kinds.to_owned());
     let pattern = extensions.iter().map(|extension| format!("*.{extension}")).collect::<Vec<_>>().join(";");
@@ -38,7 +76,32 @@ pub fn files(owner: isize, title: &str, kinds: &str, extensions: &[&str], severa
     })
 }
 
+/// Asks for files on Unix/Linux using desktop dialogs (zenity/kdialog).
+#[cfg(unix)]
+pub fn files(_owner: isize, title: &str, _kinds: &str, extensions: &[&str], several: bool) -> Vec<PathBuf> {
+    let mut cmd = std::process::Command::new("zenity");
+    cmd.arg("--file-selection").arg(format!("--title={title}"));
+    if several {
+        cmd.arg("--multiple").arg("--separator=\n");
+    }
+    if !extensions.is_empty() {
+        let pattern = extensions.iter().map(|ext| format!("*.{ext}")).collect::<Vec<_>>().join(" ");
+        cmd.arg(format!("--file-filter={pattern}"));
+    }
+    if let Ok(output) = cmd.output() {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let files: Vec<PathBuf> = text.lines().map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from).collect();
+            if !files.is_empty() {
+                return files;
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// Runs a dialog on a thread of its own, with COM set up as the dialog wants, and waits for it.
+#[cfg(windows)]
 fn on_com_thread(dialog: impl FnOnce() -> Vec<PathBuf> + Send + 'static) -> Vec<PathBuf> {
     std::thread::spawn(move || {
         // SAFETY: COM on this new thread, set up and torn down by it.
@@ -59,6 +122,7 @@ fn on_com_thread(dialog: impl FnOnce() -> Vec<PathBuf> + Send + 'static) -> Vec<
 /// # Safety
 ///
 /// COM must be set up on the calling thread, as single-threaded (`on_com_thread`).
+#[cfg(windows)]
 unsafe fn show(owner: HWND, title: &str, files: Option<(&str, &str)>, several: bool) -> Vec<PathBuf> {
     // SAFETY: the dialog is a COM object made here, on a thread with COM set up (the caller's promise); the
     // filter's strings live through the calls that read them; each result is read before it's freed.
@@ -94,6 +158,7 @@ unsafe fn show(owner: HWND, title: &str, files: Option<(&str, &str)>, several: b
 /// # Safety
 ///
 /// COM must be set up on the calling thread.
+#[cfg(windows)]
 unsafe fn path_of(item: &IShellItem) -> Option<PathBuf> {
     // SAFETY: the item is alive (borrowed); its name is a CoTaskMem string, read before it's freed.
     unsafe {

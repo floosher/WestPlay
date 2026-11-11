@@ -10,9 +10,11 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
 use crate::log;
+#[cfg(windows)]
 use crate::navigation::Image;
 
 static POSITION: AtomicUsize = AtomicUsize::new(0);
@@ -81,6 +83,7 @@ const READER: &[Option<u8>] = &[
 ///
 /// # Safety
 /// In the game's process (the plugin is loaded in it).
+#[cfg(windows)]
 pub unsafe fn locate() {
     let found = (|| {
         // SAFETY: no name: the game's own executable, mapped for the process's life.
@@ -97,8 +100,19 @@ pub unsafe fn locate() {
     POSITION.store(found.unwrap_or(0), Ordering::Release);
 }
 
+/// Finds the camera's position on Unix/Linux.
+///
+/// # Safety
+/// In the game's process.
+#[cfg(unix)]
+pub unsafe fn locate() {
+    log!("camera: camera position lookup is not enabled for native Linux ELF");
+    POSITION.store(0, Ordering::Release);
+}
+
 /// Where the camera's position is in the game's code (`image`, its executable as mapped): the address its writer and
 /// its reader both name, `None` unless each is there exactly once and they agree.
+#[cfg(windows)]
 fn find(image: &Image) -> Option<usize> {
     let writer = image.unique_masked(WRITER)?;
     let reader = image.unique_masked(READER)?;

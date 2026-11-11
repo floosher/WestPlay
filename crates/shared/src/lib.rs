@@ -16,17 +16,27 @@ use std::cell::UnsafeCell;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
 use windows::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_READWRITE, UnmapViewOfFile,
 };
+#[cfg(windows)]
 use windows::core::HSTRING;
 
 /// The bridge's name: its version in it, so an app and a plugin of different versions never share one (a
 /// bridge is laid out as whichever opened it first; one of another version, still held by a game or an app,
 /// would keep its layout until both are gone). [`BridgeMapping::matches`] still guards it.
+#[cfg(windows)]
 pub fn bridge_name() -> String {
     format!("Local\\WestPlay.Bridge.v{BRIDGE_VERSION}")
+}
+
+/// The bridge's name for POSIX shared memory (`shm_open`).
+#[cfg(unix)]
+pub fn bridge_name() -> String {
+    format!("/westplay.bridge.v{BRIDGE_VERSION}")
 }
 pub const BRIDGE_MAGIC: u32 = u32::from_le_bytes(*b"WPB7");
 pub const BRIDGE_VERSION: u32 = 26;
@@ -812,19 +822,23 @@ impl<T: Plain> SeqLock<T> {
 }
 
 /// A mapping of the [`Bridge`] shared memory. Whichever process maps it first creates it (zeroed).
+#[cfg(windows)]
 pub struct BridgeMapping {
     handle: HANDLE,
     view: MEMORY_MAPPED_VIEW_ADDRESS,
 }
 
+#[cfg(windows)]
 // SAFETY: the mapping's handle and view may be used from any thread; what's in it is shared through atomics
 // and `SeqLock`s.
 unsafe impl Send for BridgeMapping {}
+#[cfg(windows)]
 // SAFETY: as for `Send`: the bridge's fields are atomics and `SeqLock`s, made to be shared.
 unsafe impl Sync for BridgeMapping {}
 
+#[cfg(windows)]
 impl BridgeMapping {
-    pub fn open() -> windows::core::Result<Self> {
+    pub fn open() -> std::io::Result<Self> {
         let size = size_of::<Bridge>();
         // SAFETY: the mapping is the bridge's size, so the view holds one `Bridge`, zeroed when new (a valid
         // `Bridge`: atomics and plain data); it's closed if it can't be viewed.
@@ -836,10 +850,11 @@ impl BridgeMapping {
                 0,
                 size as u32,
                 &HSTRING::from(bridge_name()),
-            )?;
+            )
+            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0))?;
             let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size);
             if view.Value.is_null() {
-                let error = windows::core::Error::from_thread();
+                let error = std::io::Error::last_os_error();
                 let _ = CloseHandle(handle);
                 return Err(error);
             }
@@ -868,12 +883,106 @@ impl BridgeMapping {
     }
 }
 
+#[cfg(windows)]
 impl Drop for BridgeMapping {
     fn drop(&mut self) {
         // SAFETY: the view and the handle are this mapping's own, unmapped and closed once, as it goes.
         unsafe {
             let _ = UnmapViewOfFile(self.view);
             let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+/// A mapping of the [`Bridge`] shared memory. Whichever process maps it first creates it (zeroed).
+#[cfg(unix)]
+pub struct BridgeMapping {
+    ptr: *mut Bridge,
+    size: usize,
+}
+
+#[cfg(unix)]
+// SAFETY: the mapping's pointer may be used from any thread; what's in it is shared through atomics
+// and `SeqLock`s.
+unsafe impl Send for BridgeMapping {}
+#[cfg(unix)]
+// SAFETY: as for `Send`: the bridge's fields are atomics and `SeqLock`s, made to be shared.
+unsafe impl Sync for BridgeMapping {}
+
+#[cfg(unix)]
+impl BridgeMapping {
+    pub fn open() -> std::io::Result<Self> {
+        let size = size_of::<Bridge>();
+        let name = bridge_name();
+        let c_name = std::ffi::CString::new(name).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+
+        // SAFETY: `shm_open` creates or opens POSIX shared memory object; `ftruncate` ensures the size is
+        // `size`; `mmap` maps the shared memory page into the address space. The file descriptor is closed
+        // after mapping since `mmap` retains the mapping.
+        unsafe {
+            let fd = libc::shm_open(
+                c_name.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT,
+                0o666,
+            );
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            if libc::ftruncate(fd, size as libc::off_t) != 0 {
+                let err = std::io::Error::last_os_error();
+                libc::close(fd);
+                return Err(err);
+            }
+
+            let ptr = libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            );
+            libc::close(fd);
+
+            if ptr == libc::MAP_FAILED {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            let mapping = Self {
+                ptr: ptr as *mut Bridge,
+                size,
+            };
+            let bridge = mapping.bridge();
+            if bridge.magic.load(Ordering::Acquire) != BRIDGE_MAGIC {
+                bridge.version.store(BRIDGE_VERSION, Ordering::Relaxed);
+                bridge.magic.store(BRIDGE_MAGIC, Ordering::Release);
+            }
+            Ok(mapping)
+        }
+    }
+
+    pub fn bridge(&self) -> &Bridge {
+        // SAFETY: the pointer points to a valid mapped `Bridge`, mapped as long as `self`, which the borrow
+        // cannot outlive; it's shared only through atomics and `SeqLock`s.
+        unsafe { &*self.ptr }
+    }
+
+    /// Whether the bridge is laid out as this build's ([`BRIDGE_VERSION`]): whichever side opened it first set
+    /// its own version, and a plugin and an app of different versions read each other's blocks at the wrong
+    /// places (a dev plugin with an older app took the driving keys for typing). Neither uses one that
+    /// doesn't match.
+    pub fn matches(&self) -> bool {
+        self.bridge().version.load(Ordering::Acquire) == BRIDGE_VERSION
+    }
+}
+
+#[cfg(unix)]
+impl Drop for BridgeMapping {
+    fn drop(&mut self) {
+        // SAFETY: the pointer and size are this mapping's own, unmapped once on drop.
+        unsafe {
+            let _ = libc::munmap(self.ptr as *mut libc::c_void, self.size);
         }
     }
 }
@@ -898,9 +1007,7 @@ mod tests {
         assert!(super::vehicle_marked("brand.model", &marks) && !super::vehicle_marked("brand.other", &marks));
         assert!(
             read_marks(
-                "not one
-
-"
+                "not one\n\n"
             )
             .is_empty()
         );
@@ -908,7 +1015,10 @@ mod tests {
 
     #[test]
     fn the_bridges_name_carries_its_version() {
+        #[cfg(windows)]
         assert_eq!(super::bridge_name(), format!("Local\\WestPlay.Bridge.v{}", super::BRIDGE_VERSION));
+        #[cfg(unix)]
+        assert_eq!(super::bridge_name(), format!("/westplay.bridge.v{}", super::BRIDGE_VERSION));
     }
 
     use super::*;

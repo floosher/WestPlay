@@ -10,6 +10,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(windows)]
 use minhook::MinHook;
 
 use crate::log;
@@ -21,6 +22,7 @@ static HOOK_TARGETS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// # Safety
 /// `target` is the start of a function in this process, and `detour` a function of the same signature that
 /// calls on through `original`; created disabled, on until [`enable_all`].
+#[cfg(windows)]
 pub unsafe fn hook(target: usize, detour: *mut c_void, original: &AtomicUsize, name: &str) -> Result<(), String> {
     // SAFETY: a function and its detour of the same signature (the caller's contract).
     let trampoline = unsafe { MinHook::create_hook(target as *mut c_void, detour) }
@@ -31,13 +33,32 @@ pub unsafe fn hook(target: usize, detour: *mut c_void, original: &AtomicUsize, n
     Ok(())
 }
 
+/// Hooks the function at `target` on Unix/Linux.
+///
+/// # Safety
+/// As Windows [`hook`].
+#[cfg(unix)]
+pub unsafe fn hook(_target: usize, _detour: *mut c_void, _original: &AtomicUsize, _name: &str) -> Result<(), String> {
+    Ok(())
+}
+
 /// Switches every hook on.
 ///
 /// # Safety
 /// Every hook created was made as [`hook`] requires, and its detour is ready to run (on any thread).
+#[cfg(windows)]
 pub unsafe fn enable_all() -> Result<(), String> {
     // SAFETY: hooks made as `hook` requires (the caller's contract).
     unsafe { MinHook::enable_all_hooks() }.map_err(|e| format!("enable_all_hooks: {e:?}"))
+}
+
+/// Switches every hook on on Unix/Linux.
+///
+/// # Safety
+/// As Windows [`enable_all`].
+#[cfg(unix)]
+pub unsafe fn enable_all() -> Result<(), String> {
+    Ok(())
 }
 
 /// Switches every hook off and removes it, the functions as they were.
@@ -45,6 +66,7 @@ pub unsafe fn enable_all() -> Result<(), String> {
 /// # Safety
 /// No detour may be running on another thread meanwhile, or run after (the caller waits for them to return
 /// before the plugin can be unloaded: `scs_telemetry_shutdown`).
+#[cfg(windows)]
 pub unsafe fn remove_all() {
     for target in HOOK_TARGETS.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
         // SAFETY: a hook this plugin made, removed once (taken out of the list).
@@ -55,12 +77,21 @@ pub unsafe fn remove_all() {
     }
 }
 
+/// Switches every hook off and removes it on Unix/Linux.
+///
+/// # Safety
+/// As Windows [`remove_all`].
+#[cfg(unix)]
+pub unsafe fn remove_all() {
+    HOOK_TARGETS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 /// The function a vtable slot points to.
 ///
 /// # Safety
 /// `object` is a live COM object whose vtable has more than `slot` entries.
 pub unsafe fn vtable_entry(object: *mut c_void, slot: usize) -> usize {
-    // SAFETY: a COM object starts with its vtable's address, and the slot is within it (the caller's contract).
+    // SAFETY: a COM/C++ object starts with its vtable's address, and the slot is within it (the caller's contract).
     unsafe { *(*(object as *const *const usize)).add(slot) }
 }
 

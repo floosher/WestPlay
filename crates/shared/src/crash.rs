@@ -9,12 +9,16 @@
 
 use core::fmt::{self, Write};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::HMODULE;
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::Debug::EXCEPTION_RECORD;
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW,
     GetModuleHandleExW,
 };
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
 /// The crashes worth a line, by their codes: those that end a process when nothing catches them. A C++
@@ -90,6 +94,7 @@ impl Write for Line {
 /// Writes what `record` is onto `line`: its name and code, the module its address is in and where in it, and for
 /// a bad memory access, what it did at which address (`access violation (0xC0000005) at C:\…\westplay.dll+0x1a2b3,
 /// reading 0x0000000000000010`).
+#[cfg(windows)]
 pub fn describe(record: &EXCEPTION_RECORD, line: &mut Line) {
     let code = record.ExceptionCode.0 as u32;
     let address = record.ExceptionAddress as usize;
@@ -107,6 +112,7 @@ pub fn describe(record: &EXCEPTION_RECORD, line: &mut Line) {
 }
 
 /// `module+0xoffset` for `address`, or the bare address if it's in no module.
+#[cfg(windows)]
 fn write_place(address: usize, line: &mut Line) {
     let mut module = HMODULE::default();
     let flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
@@ -128,9 +134,11 @@ fn write_place(address: usize, line: &mut Line) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use windows::Win32::Foundation::NTSTATUS;
 
     #[test]
+    #[cfg(windows)]
     fn says_what_a_bad_read_was_and_whose_code_it_was_in() {
         let mut record = EXCEPTION_RECORD {
             ExceptionCode: NTSTATUS(0xC000_0005_u32 as i32),
@@ -150,6 +158,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn an_address_in_no_module_is_said_as_it_is() {
         let mut line = Line::new();
         write_place(0x10, &mut line);

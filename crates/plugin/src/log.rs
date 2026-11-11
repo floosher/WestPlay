@@ -12,6 +12,7 @@
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, AtomicU32, AtomicUsize, Ordering};
@@ -20,13 +21,19 @@ use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+#[cfg(windows)]
 use westplay_shared::crash;
+#[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{FlushFileBuffers, WriteFile};
+#[cfg(windows)]
 use windows::Win32::System::Com::CoTaskMemFree;
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, EXCEPTION_POINTERS, RemoveVectoredExceptionHandler,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{FOLDERID_Documents, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 
 /// The log file while no writer thread runs (before [`init`]'s, and after [`shutdown`]).
@@ -143,6 +150,7 @@ pub fn write(message: &str) {
 }
 
 /// Writes a crash into `file` (the log) as it happens ([`on_exception`]): registered once, until [`shutdown`].
+#[cfg(windows)]
 fn catch_crashes(file: &File) {
     if let Ok(kept) = file.try_clone() {
         CRASH_FILE.store(kept.as_raw_handle() as isize, Ordering::Release);
@@ -157,7 +165,12 @@ fn catch_crashes(file: &File) {
     EXCEPTION_HANDLER.store(handler as usize, Ordering::Release);
 }
 
+/// Writes a crash into `file` on Unix/Linux.
+#[cfg(unix)]
+fn catch_crashes(_file: &File) {}
+
 /// Takes the exception handler out (the plugin is being unloaded: its code is going).
+#[cfg(windows)]
 fn stop_catching_crashes() {
     let handler = EXCEPTION_HANDLER.swap(0, Ordering::AcqRel);
     if handler != 0 {
@@ -166,6 +179,10 @@ fn stop_catching_crashes() {
     }
 }
 
+/// Takes the exception handler out on Unix/Linux.
+#[cfg(unix)]
+fn stop_catching_crashes() {}
+
 /// Each of the game's exceptions as it's raised, before anything catches it: one that ends a process
 /// (`crash::FATAL`) is written into the log at once, with whose code it was in (the plugin's, the game's, another
 /// plugin's), the first few only. Written straight to the file, with no lock and no memory taken: the game may be
@@ -173,6 +190,7 @@ fn stop_catching_crashes() {
 ///
 /// # Safety
 /// Called by Windows with the exception's pointers.
+#[cfg(windows)]
 unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
     /// Windows' `EXCEPTION_CONTINUE_SEARCH`: the exception goes on to whatever handles it.
     const CONTINUE_SEARCH: i32 = 0;
@@ -219,6 +237,7 @@ pub fn log_dir() -> &'static PathBuf {
 }
 
 /// The player's Documents folder (Windows' own, wherever it's moved).
+#[cfg(windows)]
 pub fn documents_dir() -> PathBuf {
     // SAFETY: Windows hands back a CoTaskMem string, read before it's freed here.
     unsafe {
@@ -233,6 +252,22 @@ pub fn documents_dir() -> PathBuf {
     }
 }
 
+/// The player's Documents / data folder on Unix/Linux ($XDG_DATA_HOME or ~/.local/share).
+#[cfg(unix)]
+pub fn documents_dir() -> PathBuf {
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        let path = PathBuf::from(data_home);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        return home.join(".local").join("share");
+    }
+    std::env::temp_dir()
+}
+
+#[cfg(windows)]
 fn fallback_documents_dir() -> PathBuf {
     std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("Documents")).unwrap_or_else(std::env::temp_dir)
 }
@@ -242,11 +277,13 @@ mod tests {
     use super::*;
 
     /// This test's name, for running it again as a process that crashes.
+    #[cfg(windows)]
     const CRASH_TEST: &str = "log::tests::writes_a_crash_into_the_log_as_it_happens_and_lets_it_go_on";
 
     /// A bad memory access in a process of its own (this test run again, told by `WESTPLAY_CRASH_LOG`): the log
     /// says what it was and where, the process still ends as it would have. Taken out, the handler is gone.
     #[test]
+    #[cfg(windows)]
     fn writes_a_crash_into_the_log_as_it_happens_and_lets_it_go_on() {
         if let Ok(path) = std::env::var("WESTPLAY_CRASH_LOG") {
             let file = File::create(path).unwrap();

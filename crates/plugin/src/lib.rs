@@ -6,7 +6,9 @@
 
 mod bridge;
 mod camera;
+#[cfg(windows)]
 mod d3d;
+#[cfg(windows)]
 mod frame;
 mod hooks;
 mod input;
@@ -15,11 +17,19 @@ mod keyboard;
 mod log;
 mod mod_mount;
 mod navigation;
+#[cfg(windows)]
 mod screens;
 mod scs;
 mod telemetry;
 mod truckersmp;
 mod typing;
+
+#[cfg(unix)]
+#[path = "linux_d3d.rs"]
+mod d3d;
+#[cfg(unix)]
+#[path = "linux_screens.rs"]
+mod screens;
 
 use std::ffi::{CStr, CString};
 use std::sync::OnceLock;

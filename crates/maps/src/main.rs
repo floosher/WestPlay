@@ -13,11 +13,17 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use westplay_setup::map_builder::{self, ALLOCATOR_VARIABLE, MIMALLOC, Request, Said};
+#[cfg(windows)]
 use westplay_shared::crash;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{FlushFileBuffers, WriteFile};
+#[cfg(windows)]
 use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::Debug::{EXCEPTION_POINTERS, SetUnhandledExceptionFilter};
+#[cfg(windows)]
 use windows::Win32::System::Environment::GetEnvironmentVariableW;
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
 #[global_allocator]
@@ -45,6 +51,7 @@ impl Chosen {
 
 /// Whether the environment variable `name` is `value`, read with no memory allocated (the allocator isn't chosen
 /// yet when it's read).
+#[cfg(windows)]
 fn variable_is(name: &str, value: &str) -> bool {
     let mut wide_name = [0u16; 64];
     for (at, unit) in name.encode_utf16().take(63).enumerate() {
@@ -54,6 +61,23 @@ fn variable_is(name: &str, value: &str) -> bool {
     // SAFETY: `wide_name` is nul-terminated (one unit at least left 0), and `found` a local the call writes into.
     let length = unsafe { GetEnvironmentVariableW(PCWSTR(wide_name.as_ptr()), Some(&mut found)) } as usize;
     length < found.len() && found[..length].iter().copied().eq(value.encode_utf16())
+}
+
+#[cfg(unix)]
+fn variable_is(name: &str, value: &str) -> bool {
+    let mut c_name = [0u8; 64];
+    if name.len() >= c_name.len() {
+        return false;
+    }
+    c_name[..name.len()].copy_from_slice(name.as_bytes());
+    // SAFETY: c_name is null-terminated and valid.
+    let val_ptr = unsafe { libc::getenv(c_name.as_ptr() as *const libc::c_char) };
+    if val_ptr.is_null() {
+        return false;
+    }
+    // SAFETY: val_ptr is null-terminated C string from getenv.
+    let c_str = unsafe { std::ffi::CStr::from_ptr(val_ptr) };
+    c_str.to_bytes() == value.as_bytes()
 }
 
 // SAFETY: every call goes to the one allocator chosen before the first allocation and kept after, so memory is only
@@ -115,6 +139,7 @@ fn fail(why: &str) -> ! {
 }
 
 /// This process's memory, its private bytes (bytes).
+#[cfg(windows)]
 fn memory() -> Option<u64> {
     use windows::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
@@ -130,7 +155,22 @@ fn memory() -> Option<u64> {
     Some(counters.PrivateUsage as u64)
 }
 
+#[cfg(unix)]
+fn memory() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let mut fields = statm.split_whitespace();
+    let _size = fields.next()?;
+    let resident: u64 = fields.next()?.parse().ok()?;
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size > 0 {
+        Some(resident * page_size as u64)
+    } else {
+        Some(resident * 4096)
+    }
+}
+
 /// The PC's memory in all (bytes).
+#[cfg(windows)]
 fn total_memory() -> Option<u64> {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     let mut status = MEMORYSTATUSEX { dwLength: size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
@@ -139,7 +179,19 @@ fn total_memory() -> Option<u64> {
     Some(status.ullTotalPhys)
 }
 
+#[cfg(unix)]
+fn total_memory() -> Option<u64> {
+    let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if pages > 0 && page_size > 0 {
+        Some(pages as u64 * page_size as u64)
+    } else {
+        None
+    }
+}
+
 /// A native crash said on the standard error (WestPlay keeps it in its log): what it was and whose code it was in.
+#[cfg(windows)]
 fn catch_crashes() {
     // SAFETY: `on_crash` is this executable's own, valid for the process's life.
     unsafe {
@@ -147,8 +199,12 @@ fn catch_crashes() {
     }
 }
 
+#[cfg(unix)]
+fn catch_crashes() {}
+
 /// # Safety
 /// Called by Windows with the exception's pointers, as the process is failing: no locks, no memory taken.
+#[cfg(windows)]
 unsafe extern "system" fn on_crash(info: *const EXCEPTION_POINTERS) -> i32 {
     /// Windows' `EXCEPTION_CONTINUE_SEARCH`: its own handling goes on (the process ends).
     const CONTINUE_SEARCH: i32 = 0;

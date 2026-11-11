@@ -12,10 +12,30 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use westplay_shared::{TypedKey, TypingState};
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, GetKeyboardState, ToUnicodeEx, VK_APPS, VK_BACK, VK_CONTROL, VK_ESCAPE, VK_F1, VK_F24, VK_LWIN,
     VK_MENU, VK_RETURN, VK_RWIN, VK_SNAPSHOT,
 };
+
+#[cfg(unix)]
+const VK_BACK: u32 = 0x08;
+#[cfg(unix)]
+const VK_RETURN: u32 = 0x0D;
+#[cfg(unix)]
+const VK_ESCAPE: u32 = 0x1B;
+#[cfg(unix)]
+const VK_SNAPSHOT: u32 = 0x2C;
+#[cfg(unix)]
+const VK_LWIN: u32 = 0x5B;
+#[cfg(unix)]
+const VK_RWIN: u32 = 0x5C;
+#[cfg(unix)]
+const VK_APPS: u32 = 0x5D;
+#[cfg(unix)]
+const VK_F1: u32 = 0x70;
+#[cfg(unix)]
+const VK_F24: u32 = 0x87;
 
 use crate::{bridge, log};
 
@@ -75,9 +95,17 @@ impl Gate {
 
 /// Keys that stay the game's while typing: the F-keys, Print Screen, the Windows keys and the menu key
 /// (screenshots, the game's own F-key functions, switching windows).
+#[cfg(windows)]
 pub fn stays_the_games(key: u32) -> bool {
     (VK_F1.0 as u32..=VK_F24.0 as u32).contains(&key)
         || [VK_SNAPSHOT, VK_LWIN, VK_RWIN, VK_APPS].iter().any(|vk| vk.0 as u32 == key)
+}
+
+/// Keys that stay the game's while typing on Unix/Linux.
+#[cfg(unix)]
+pub fn stays_the_games(key: u32) -> bool {
+    (VK_F1..=VK_F24).contains(&key)
+        || [VK_SNAPSHOT, VK_LWIN, VK_RWIN, VK_APPS].contains(&key)
 }
 
 /// The same keys as DirectInput names them (scan codes, extended ones with 0x80): F1-F15, Print Screen
@@ -108,6 +136,7 @@ pub unsafe fn press(key: u32, scancode: u32) {
 ///
 /// # Safety
 /// As [`press`].
+#[cfg(windows)]
 unsafe fn typed(key: u32, scancode: u32) -> Vec<u32> {
     // SAFETY: plain Windows calls with locals; the keyboard state is this thread's (the caller's contract).
     unsafe {
@@ -131,13 +160,39 @@ unsafe fn typed(key: u32, scancode: u32) -> Vec<u32> {
     }
 }
 
+/// What a key press types on Unix/Linux.
+///
+/// # Safety
+/// As Windows [`typed`].
+#[cfg(unix)]
+unsafe fn typed(key: u32, _scancode: u32) -> Vec<u32> {
+    if let Some(meaning) = key_meaning(key, false) {
+        return meaning.map(|k| k as u32).into_iter().collect();
+    }
+    Vec::new()
+}
+
 /// A key with a meaning of its own while typing: `Some(Some(key))`; `Some(None)` for one that types nothing
 /// (other Ctrl shortcuts); `None` for one the layout turns into characters.
+#[cfg(windows)]
 fn key_meaning(key: u32, ctrl: bool) -> Option<Option<TypedKey>> {
     match key {
         k if k == VK_BACK.0 as u32 => Some(Some(if ctrl { TypedKey::WordBackspace } else { TypedKey::Backspace })),
         k if k == VK_RETURN.0 as u32 => Some(Some(TypedKey::Enter)),
         k if k == VK_ESCAPE.0 as u32 => Some(Some(TypedKey::Escape)),
+        k if k == u32::from(b'V') && ctrl => Some(Some(TypedKey::Paste)),
+        _ if ctrl => Some(None),
+        _ => None,
+    }
+}
+
+/// A key with a meaning of its own while typing on Unix/Linux.
+#[cfg(unix)]
+fn key_meaning(key: u32, ctrl: bool) -> Option<Option<TypedKey>> {
+    match key {
+        k if k == VK_BACK => Some(Some(if ctrl { TypedKey::WordBackspace } else { TypedKey::Backspace })),
+        k if k == VK_RETURN => Some(Some(TypedKey::Enter)),
+        k if k == VK_ESCAPE => Some(Some(TypedKey::Escape)),
         k if k == u32::from(b'V') && ctrl => Some(Some(TypedKey::Paste)),
         _ if ctrl => Some(None),
         _ => None,

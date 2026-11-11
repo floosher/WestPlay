@@ -24,9 +24,31 @@ fn main() {
         }
     }
 
-    let data_dir = std::env::var_os("LOCALAPPDATA")
-        .map(|dir| PathBuf::from(dir).join("WestPlay"))
-        .unwrap_or_else(|| std::env::temp_dir().join("WestPlay"));
+    let data_dir = {
+        #[cfg(windows)]
+        {
+            std::env::var_os("LOCALAPPDATA")
+                .map(|dir| PathBuf::from(dir).join("WestPlay"))
+                .unwrap_or_else(|| std::env::temp_dir().join("WestPlay"))
+        }
+        #[cfg(unix)]
+        {
+            if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+                let path = PathBuf::from(data_home);
+                if !path.as_os_str().is_empty() {
+                    path.join("app.westplay")
+                } else {
+                    std::env::var_os("HOME")
+                        .map(|h| PathBuf::from(h).join(".local").join("share").join("app.westplay"))
+                        .unwrap_or_else(|| std::env::temp_dir().join("WestPlay"))
+                }
+            } else {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".local").join("share").join("app.westplay"))
+                    .unwrap_or_else(|| std::env::temp_dir().join("WestPlay"))
+            }
+        }
+    };
     let config = Config {
         width,
         height,

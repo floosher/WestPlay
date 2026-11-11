@@ -3,19 +3,25 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::ERROR_SUCCESS;
+#[cfg(windows)]
 use windows::Win32::System::Com::CoTaskMemFree;
+#[cfg(windows)]
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW, RegGetValueW,
     RegOpenKeyExW,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{FOLDERID_Documents, FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+#[cfg(windows)]
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::game::Kind;
 use crate::vdf;
 
 /// The player's Documents folder, wherever it is (it may be moved, to OneDrive say).
+#[cfg(windows)]
 pub fn documents() -> Option<PathBuf> {
     // SAFETY: Windows hands back a CoTaskMem string, read before it's freed here.
     unsafe {
@@ -26,7 +32,21 @@ pub fn documents() -> Option<PathBuf> {
     }
 }
 
+/// The player's Documents / data folder on Unix/Linux ($XDG_DATA_HOME or ~/.local/share).
+#[cfg(unix)]
+pub fn documents() -> Option<PathBuf> {
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        let path = PathBuf::from(data_home);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some(home.join(".local").join("share"))
+}
+
 /// The player's roaming application data folder (`%APPDATA%`), where TruckersMP installs itself.
+#[cfg(windows)]
 pub fn roaming() -> Option<PathBuf> {
     // SAFETY: Windows hands back a CoTaskMem string, read before it's freed here.
     unsafe {
@@ -37,10 +57,24 @@ pub fn roaming() -> Option<PathBuf> {
     }
 }
 
+/// The player's configuration directory on Unix/Linux ($XDG_CONFIG_HOME or ~/.config).
+#[cfg(unix)]
+pub fn roaming() -> Option<PathBuf> {
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        let path = PathBuf::from(config_home);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some(home.join(".config"))
+}
+
 /// Every folder that may be the player's Documents for the game `kind`, Windows' first: Windows' own (wherever it's moved, to
 /// OneDrive say), the user's `Documents`, and each OneDrive's folders (OneDrive names Documents in the
 /// player's language: Belgeler, Dokumente…). Windows and the game can disagree: Documents backed up to
 /// OneDrive then not, or a game folder OneDrive brought from another PC.
+#[cfg(windows)]
 pub fn documents_folders(kind: Kind) -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = documents().into_iter().collect();
     if let Some(home) = std::env::var_os("USERPROFILE") {
@@ -60,6 +94,29 @@ pub fn documents_folders(kind: Kind) -> Vec<PathBuf> {
     let mut seen = Vec::new();
     folders.retain(|folder| {
         let key = folder.to_string_lossy().to_lowercase();
+        let new = !seen.contains(&key);
+        seen.push(key);
+        new
+    });
+    folders
+}
+
+/// Every folder that may be the player's Documents/saves for the game `kind` on Unix/Linux:
+/// XDG data home (~/.local/share), ~/Documents, $HOME, and any -homedir launch option.
+#[cfg(unix)]
+pub fn documents_folders(kind: Kind) -> Vec<PathBuf> {
+    let mut folders: Vec<PathBuf> = documents().into_iter().collect();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        folders.push(home.join("Documents"));
+        folders.push(home);
+    }
+    for home in launch_homes(kind) {
+        folders.extend(home.parent().map(Path::to_path_buf));
+        folders.push(home);
+    }
+    let mut seen = Vec::new();
+    folders.retain(|folder| {
+        let key = folder.to_string_lossy().to_string();
         let new = !seen.contains(&key);
         seen.push(key);
         new
@@ -137,6 +194,7 @@ fn choose_game_documents(folders: &[PathBuf], kind: Kind) -> Option<PathBuf> {
 
 /// Steam's folder, as Steam records it (for this user, else for the machine), named as Windows names it:
 /// Steam keeps it lowercase with forward slashes (`c:/program files (x86)/steam`).
+#[cfg(windows)]
 pub fn steam() -> Option<PathBuf> {
     let path = registry_text(HKEY_CURRENT_USER, w!("Software\\Valve\\Steam"), w!("SteamPath"))
         .or_else(|| registry_text(HKEY_LOCAL_MACHINE, w!("SOFTWARE\\WOW6432Node\\Valve\\Steam"), w!("InstallPath")))
@@ -144,15 +202,43 @@ pub fn steam() -> Option<PathBuf> {
     path.is_dir().then(|| windows_name(&path))
 }
 
+/// Steam's installation folder on Unix/Linux, checking standard, Flatpak, and Snap directories.
+#[cfg(unix)]
+pub fn steam() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let candidates = [
+        home.join(".local").join("share").join("Steam"),
+        home.join(".steam").join("steam"),
+        home.join(".steam").join("root"),
+        home.join(".var").join("app").join("com.valvesoftware.Steam").join("data").join("Steam"),
+        home.join(".var").join("app").join("com.valvesoftware.Steam").join(".local").join("share").join("Steam"),
+        home.join("snap").join("steam").join("common").join(".local").join("share").join("Steam"),
+    ];
+    for path in candidates {
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// `path` as Windows names it: each folder with its own capitals, joined by backslashes, in the plain form
 /// ([`plain`]); as given if it can't be looked up (it isn't there).
+#[cfg(windows)]
 pub fn windows_name(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).map_or_else(|_| path.to_path_buf(), |real| plain(&real))
+}
+
+/// `path` canonicalized on Unix/Linux, or as given if it isn't there.
+#[cfg(unix)]
+pub fn windows_name(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// `path` in its plain form: `\\?\C:\x` as `C:\x`, `\\?\UNC\server\share\x` as `\\server\share\x`; any other
 /// path as it is. The long form is what `canonicalize` gives, and WebView2 serves no files from a folder named
 /// that way.
+#[cfg(windows)]
 pub fn plain(path: &Path) -> PathBuf {
     use std::path::{Component, Prefix};
     let mut components = path.components();
@@ -169,6 +255,12 @@ pub fn plain(path: &Path) -> PathBuf {
     let mut plain = PathBuf::from(start);
     plain.extend(components.filter(|component| !matches!(component, Component::RootDir)));
     plain
+}
+
+/// `path` in its plain form on Unix/Linux.
+#[cfg(unix)]
+pub fn plain(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 /// Steam's library folders (each with a `steamapps` folder), from its `libraryfolders.vdf`; Steam's own
@@ -198,6 +290,7 @@ pub fn library_paths(text: &str) -> Vec<PathBuf> {
 
 /// Every program Windows lists as installed (for this user and the machine, 64- and 32-bit): its name and
 /// where it's installed, when it says.
+#[cfg(windows)]
 pub fn installed_programs() -> Vec<(String, PathBuf)> {
     let roots = [
         (HKEY_LOCAL_MACHINE, w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall")),
@@ -223,7 +316,14 @@ pub fn installed_programs() -> Vec<(String, PathBuf)> {
     programs
 }
 
+/// Installed programs query for non-Windows platforms (empty; games found via Steam).
+#[cfg(unix)]
+pub fn installed_programs() -> Vec<(String, PathBuf)> {
+    Vec::new()
+}
+
 /// The names of a registry key's subkeys.
+#[cfg(windows)]
 fn subkeys(hive: HKEY, path: PCWSTR) -> Vec<String> {
     let mut key = HKEY::default();
     // SAFETY: the hive is a predefined key and `path` a static string; `key` is a local the call writes.
@@ -250,6 +350,7 @@ fn subkeys(hive: HKEY, path: PCWSTR) -> Vec<String> {
 }
 
 /// A text value of the registry, if it's there.
+#[cfg(windows)]
 pub fn registry_text(hive: HKEY, path: PCWSTR, name: PCWSTR) -> Option<String> {
     let mut buffer = [0u16; 1024];
     let mut size = (buffer.len() * 2) as u32;
@@ -293,6 +394,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn names_folders_plainly() {
         assert_eq!(plain(Path::new(r"\\?\C:\Users\a\WestPlay\ui")), Path::new(r"C:\Users\a\WestPlay\ui"));
         assert_eq!(plain(Path::new(r"\\?\UNC\server\share\ui")), Path::new(r"\\server\share\ui"));
@@ -301,6 +403,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn names_a_folder_as_windows_does() {
         // Written as Steam writes its own folder: lowercase, forward slashes.
         let windows = std::env::var("SystemRoot").unwrap();

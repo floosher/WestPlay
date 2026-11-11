@@ -27,6 +27,7 @@ use std::sync::atomic::Ordering;
 
 use westplay_shared::navigator::{SET_TARGETS, Targets, read_set_targets};
 use westplay_shared::{RouteAction, RouteAnswer};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
 use crate::{bridge, log};
@@ -304,6 +305,7 @@ fn target(node: usize) -> Target {
 ///
 /// # Safety
 /// In the game's process (the plugin is loaded in it).
+#[cfg(windows)]
 unsafe fn locate() -> Option<Game> {
     let found = (|| {
         // SAFETY: no name: the game's own executable, mapped for the process's life.
@@ -332,6 +334,15 @@ unsafe fn locate() -> Option<Game> {
         log!("waypoint: the game's waypoint code isn't the version WestPlay knows; waypoints can't be added");
     }
     found
+}
+
+/// Finds the pieces in the running game's code on Unix/Linux.
+///
+/// # Safety
+/// In the game's process.
+#[cfg(unix)]
+unsafe fn locate() -> Option<Game> {
+    None
 }
 
 /// The pieces in the game's code (`image`, its executable as mapped): the core object's static, the navigator's

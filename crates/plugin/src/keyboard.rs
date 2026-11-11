@@ -8,31 +8,47 @@
 //! drivers can steer and brake while using the screen; but a key bound to WestPlay (`keybinds`) pressed while
 //! its binding counts, from its going down to its release.
 
+#[cfg(windows)]
 use std::ffi::c_void;
+#[cfg(windows)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     MSG, PM_REMOVE, WM_CHAR, WM_DEADCHAR, WM_KEYDOWN, WM_KEYUP, WM_NULL, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
     WM_SYSKEYUP,
 };
+#[cfg(windows)]
 use windows::core::{BOOL, PCSTR, s, w};
 
+#[cfg(windows)]
 use crate::hooks::{guarded, hook};
+#[cfg(windows)]
 use crate::{keybinds, typing};
 
+#[cfg(windows)]
 type PeekMessageWFn = unsafe extern "system" fn(*mut MSG, HWND, u32, u32, u32) -> BOOL;
+#[cfg(windows)]
 type GetMessageWFn = unsafe extern "system" fn(*mut MSG, HWND, u32, u32) -> BOOL;
+#[cfg(windows)]
 type GetKeyStateFn = unsafe extern "system" fn(i32) -> i16;
 
+#[cfg(windows)]
 static ORIG_PEEK_MESSAGE_W: AtomicUsize = AtomicUsize::new(0);
+#[cfg(windows)]
 static ORIG_GET_MESSAGE_W: AtomicUsize = AtomicUsize::new(0);
+#[cfg(windows)]
 static ORIG_GET_ASYNC_KEY_STATE: AtomicUsize = AtomicUsize::new(0);
+#[cfg(windows)]
 static ORIG_GET_KEY_STATE: AtomicUsize = AtomicUsize::new(0);
 
 /// # Safety
 /// In the game's process, before the hooks are switched on ([`crate::hooks::enable_all`]).
+#[cfg(windows)]
 pub unsafe fn install() -> Result<(), String> {
     // SAFETY: user32's own exports, hooked with detours of their exact signatures (below).
     unsafe {
@@ -51,8 +67,18 @@ pub unsafe fn install() -> Result<(), String> {
     }
 }
 
+/// Installs keyboard hooks on Unix/Linux.
+///
+/// # Safety
+/// In the game's process.
+#[cfg(unix)]
+pub unsafe fn install() -> Result<(), String> {
+    Ok(())
+}
+
 /// # Safety
 /// Called by Windows' callers in place of `PeekMessageW`, with its arguments.
+#[cfg(windows)]
 unsafe extern "system" fn peek_message_w(msg: *mut MSG, window: HWND, min: u32, max: u32, remove: u32) -> BOOL {
     // SAFETY: the trampoline was stored before the hooks were switched on (`install`, then `enable_all`), so it's
     // the original function; `msg` is the caller's, written by it, and filtered only when set.
@@ -69,6 +95,7 @@ unsafe extern "system" fn peek_message_w(msg: *mut MSG, window: HWND, min: u32, 
 
 /// # Safety
 /// Called in place of `GetMessageW`, with its arguments.
+#[cfg(windows)]
 unsafe extern "system" fn get_message_w(msg: *mut MSG, window: HWND, min: u32, max: u32) -> BOOL {
     // SAFETY: as `peek_message_w`: the original function, and the caller's `msg` once it's set.
     unsafe {
@@ -84,6 +111,7 @@ unsafe extern "system" fn get_message_w(msg: *mut MSG, window: HWND, min: u32, m
 
 /// # Safety
 /// Called in place of `GetAsyncKeyState`, with its argument.
+#[cfg(windows)]
 unsafe extern "system" fn get_async_key_state(key: i32) -> i16 {
     // SAFETY: the trampoline was stored before the hooks were switched on: the original function.
     unsafe {
@@ -101,6 +129,7 @@ unsafe extern "system" fn get_async_key_state(key: i32) -> i16 {
 
 /// # Safety
 /// Called in place of `GetKeyState`, with its argument.
+#[cfg(windows)]
 unsafe extern "system" fn get_key_state(key: i32) -> i16 {
     // SAFETY: the trampoline was stored before the hooks were switched on: the original function.
     unsafe {
@@ -117,12 +146,14 @@ unsafe extern "system" fn get_key_state(key: i32) -> i16 {
 
 /// Whether the game's polling sees `key` up whatever it is: any key but its own while the player types, and a
 /// key bound to WestPlay while its binding counts (`keybinds`).
+#[cfg(windows)]
 fn hidden(key: u32) -> bool {
     (typing::typing() && !typing::stays_the_games(key)) || keybinds::taken(key)
 }
 
 /// While the player types, takes every key's messages (but the game's own) away from the game, turning them
 /// into `WM_NULL`, each press queued as what it types; and a bound key's presses while its binding counts.
+#[cfg(windows)]
 fn filter(msg: &mut MSG) {
     let key = msg.wParam.0 as u32;
     let typed = typing::typing()

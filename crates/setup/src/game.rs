@@ -5,9 +5,11 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW,
 };
+#[cfg(windows)]
 use windows::core::{HSTRING, w};
 
 use crate::{places, vdf};
@@ -41,6 +43,7 @@ impl Kind {
     }
 
     /// Its executable, in its folder.
+    #[cfg(windows)]
     pub fn executable(self) -> &'static str {
         match self {
             Kind::Ets2 => "bin/win_x64/eurotrucks2.exe",
@@ -48,11 +51,30 @@ impl Kind {
         }
     }
 
-    /// Its process, as Windows names it (TruckersMP's client runs the same).
+    /// Its executable, in its folder.
+    #[cfg(unix)]
+    pub fn executable(self) -> &'static str {
+        match self {
+            Kind::Ets2 => "bin/linux_x64/eurotrucks2",
+            Kind::Ats => "bin/linux_x64/amtrucks",
+        }
+    }
+
+    /// Its process, as Windows/Linux names it (TruckersMP's client runs the same).
+    #[cfg(windows)]
     fn process(self) -> &'static str {
         match self {
             Kind::Ets2 => "eurotrucks2.exe",
             Kind::Ats => "amtrucks.exe",
+        }
+    }
+
+    /// Its process, as Windows/Linux names it (TruckersMP's client runs the same).
+    #[cfg(unix)]
+    fn process(self) -> &'static str {
+        match self {
+            Kind::Ets2 => "eurotrucks2",
+            Kind::Ats => "amtrucks",
         }
     }
 
@@ -206,8 +228,15 @@ impl Game {
     }
 
     /// Where the plugin goes.
+    #[cfg(windows)]
     pub fn plugins_dir(&self) -> PathBuf {
         self.dir.join("bin").join("win_x64").join("plugins")
+    }
+
+    /// Where the plugin goes.
+    #[cfg(unix)]
+    pub fn plugins_dir(&self) -> PathBuf {
+        self.dir.join("bin").join("linux_x64").join("plugins")
     }
 }
 
@@ -249,6 +278,7 @@ pub fn running() -> bool {
 }
 
 /// Whether a process of one of these names (as Windows names them) is running.
+#[cfg(windows)]
 fn running_processes(names: &[&str]) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -277,6 +307,33 @@ fn running_processes(names: &[&str]) -> bool {
     found
 }
 
+/// Whether a process of one of these names is running on Unix/Linux by scanning `/proc`.
+#[cfg(unix)]
+fn running_processes(names: &[&str]) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else { return false };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name_str) = file_name.to_str() else { continue };
+        if !name_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let pid_path = entry.path();
+        if let Ok(comm) = std::fs::read_to_string(pid_path.join("comm")) {
+            let comm = comm.trim();
+            if names.iter().any(|wanted| comm.eq_ignore_ascii_case(wanted)) {
+                return true;
+            }
+        }
+        if let Ok(cmdline) = std::fs::read(pid_path.join("cmdline")) {
+            let cmd = String::from_utf8_lossy(&cmdline);
+            if names.iter().any(|wanted| cmd.contains(wanted)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The game `kind`'s folder name in its Steam library, from its `appmanifest_<app>.acf`.
 pub fn steam_install_dir(manifest: &str, kind: Kind) -> Option<String> {
     let file = vdf::parse(manifest)?;
@@ -298,6 +355,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 }
 
 /// An executable's file version (its version resource's), if it has one.
+#[cfg(windows)]
 fn executable_version(path: &Path) -> Option<Version> {
     let file = HSTRING::from(path.as_os_str());
     // SAFETY: `data` is the size Windows asked for and is read only through it; the fixed info is checked to be
@@ -322,6 +380,12 @@ fn executable_version(path: &Path) -> Option<Version> {
         let (ms, ls) = (info.dwFileVersionMS, info.dwFileVersionLS);
         Some(Version([(ms >> 16) as u16, ms as u16, (ls >> 16) as u16, ls as u16]))
     }
+}
+
+/// An executable's file version on Unix/Linux (None; ELF binaries do not carry Windows PE version resources).
+#[cfg(unix)]
+fn executable_version(_path: &Path) -> Option<Version> {
+    None
 }
 
 #[cfg(test)]

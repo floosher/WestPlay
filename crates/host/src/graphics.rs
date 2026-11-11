@@ -6,12 +6,22 @@
 //! the one the player chose in the companion, if it's there. A different GPU than the one WebView2 was
 //! started on takes starting WebView2 again (lib.rs ends the host's run with [`GpuChanged`]).
 
+#[cfg(windows)]
 use windows::Win32::Foundation::LUID;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IDXGIAdapter1, IDXGIFactory1,
     IDXGIFactory6,
 };
+#[cfg(windows)]
 use windows::core::Interface;
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LUID {
+    pub LowPart: u32,
+    pub HighPart: i32,
+}
 
 /// A GPU: its id (what the player's choice is kept as: its PCI ids, the same from boot to boot, where a
 /// LUID isn't), its name, and its LUID this boot.
@@ -25,6 +35,7 @@ pub struct Adapter {
 }
 
 /// The PC's GPUs (not Windows' software one), the high-performance ones first, as Windows ranks them.
+#[cfg(windows)]
 pub fn adapters() -> Vec<Adapter> {
     // SAFETY: plain DXGI calls with locals; the factory and adapters are released as they go.
     let listed: Vec<IDXGIAdapter1> = unsafe {
@@ -51,6 +62,16 @@ pub fn adapters() -> Vec<Adapter> {
         adapters.push(Adapter { id, name, luid: desc.AdapterLuid });
     }
     adapters
+}
+
+/// The PC's GPUs on Unix/Linux.
+#[cfg(unix)]
+pub fn adapters() -> Vec<Adapter> {
+    vec![Adapter {
+        id: "default:0000:00000000:0".into(),
+        name: "Primary Graphics Adapter".into(),
+        luid: LUID { LowPart: 0, HighPart: 0 },
+    }]
 }
 
 pub fn same(a: LUID, b: LUID) -> bool {

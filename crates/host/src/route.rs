@@ -38,11 +38,15 @@ use westplay_shared::BridgeMapping;
 use westplay_shared::navigator::{
     NEXT_NODE, NextNode, ROUTE_WALK, SET_TARGETS, find_unique, read_next_node, read_route_walk, read_set_targets,
 };
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, TH32CS_SNAPMODULE,
 };
+#[cfg(windows)]
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 
 /// How often the route is read.
@@ -517,11 +521,13 @@ impl JunctionFiles {
 /// The running game's process, opened to read its memory: where its executable is loaded, and its file.
 pub(crate) struct Process {
     pub pid: u32,
+    #[cfg(windows)]
     handle: HANDLE,
     pub base: usize,
     pub exe: PathBuf,
 }
 
+#[cfg(windows)]
 impl Drop for Process {
     fn drop(&mut self) {
         // SAFETY: the process handle is this reader's own, closed once, as it goes.
@@ -533,6 +539,7 @@ impl Drop for Process {
 
 impl Process {
     /// `who` names the reader in what's logged.
+    #[cfg(windows)]
     pub fn open(pid: u32, who: &str) -> Option<Self> {
         // Windows refuses this for a game running as administrator when WestPlay isn't.
         let (base, exe) = match main_module(pid) {
@@ -551,9 +558,22 @@ impl Process {
             }
         }
     }
+
+    #[cfg(unix)]
+    pub fn open(pid: u32, who: &str) -> Option<Self> {
+        let exe = match std::fs::read_link(format!("/proc/{pid}/exe")) {
+            Ok(path) => path,
+            Err(error) => {
+                log!("{who}: the game's process exe can't be looked into: {error}");
+                return None;
+            }
+        };
+        Some(Self { pid, base: 0, exe })
+    }
 }
 
 impl Memory for Process {
+    #[cfg(windows)]
     fn read(&self, address: usize, buffer: &mut [u8]) -> bool {
         let mut read = 0;
         // SAFETY: the handle is open with read access; the buffer is ours and the call writes at most its length.
@@ -567,6 +587,11 @@ impl Memory for Process {
             )
         };
         ok.is_ok() && read == buffer.len()
+    }
+
+    #[cfg(unix)]
+    fn read(&self, _address: usize, _buffer: &mut [u8]) -> bool {
+        false
     }
 }
 
@@ -609,6 +634,7 @@ fn map_node_of(bytes: &[u8; MAP_NODE_SIZE]) -> RouteNode {
 }
 
 /// The game's executable: where it's loaded and its file.
+#[cfg(windows)]
 fn main_module(pid: u32) -> windows::core::Result<(usize, PathBuf)> {
     // SAFETY: the snapshot is closed once after use; `entry` is a local with its size set, as the call requires.
     unsafe {

@@ -19,12 +19,20 @@
 use std::ffi::{CString, c_char, c_void};
 use std::path::Path;
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId};
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
+#[cfg(unix)]
+static ALREADY_MOUNTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 use crate::log;
+#[cfg(windows)]
 use crate::navigation::Image;
 
 /// The game's mount, found by its start (`+0xF17E0` in 1.61.1.9, `+0xECB20` in 1.60.1.7, the same in both but
@@ -141,6 +149,7 @@ pub unsafe fn mount(game_id: &str) {
         log!("mod mount: WestPlay 1.2's mod is still in {} (two would stop the game): nothing mounted", old.display());
         return;
     }
+    #[cfg(windows)]
     // SAFETY: the game's own module, mapped for the process's life; its code read where the mount was found.
     // A mutex named for this process tells whether an earlier load of the plugin mounted already (it's left
     // open, so it lasts as long as the process).
@@ -203,6 +212,15 @@ pub unsafe fn mount(game_id: &str) {
         }
         index(pool);
         log!("mod mount: the mod pool's index rebuilt");
+    }
+
+    #[cfg(unix)]
+    {
+        if ALREADY_MOUNTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            log!("mod mount: already mounted in this game process");
+            return;
+        }
+        log!("mod mount: {} ready for game loading", path.display());
     }
 }
 

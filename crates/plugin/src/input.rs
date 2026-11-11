@@ -28,20 +28,39 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use westplay_shared::{DEFAULT_INTERACTION_KEY, PointerBlock};
+#[cfg(windows)]
 use windows::Win32::Devices::HumanInterfaceDevice::{
     DI8DEVTYPE_KEYBOARD, DI8DEVTYPE_MOUSE, DIDEVCAPS, DIDEVICEOBJECTDATA, DIDEVICEOBJECTINSTANCEA,
     DIDEVICEOBJECTINSTANCEW, DIGDD_PEEK, DIPH_BYOFFSET, DIRECTINPUT_VERSION, DirectInput8Create, GUID_Button,
     GUID_SysKeyboard, GUID_SysMouse, GUID_XAxis, GUID_YAxis, GUID_ZAxis, IDirectInput8A, IDirectInput8W,
     IDirectInputDevice8A, IDirectInputDevice8W,
 };
+#[cfg(windows)]
 use windows::Win32::Foundation::HMODULE;
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW,
     GetModuleHandleExW, GetModuleHandleW,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, MAPVK_VSC_TO_VK_EX, MapVirtualKeyW};
+#[cfg(windows)]
 use windows::core::{GUID, HRESULT, Interface, PCWSTR};
 
+#[cfg(unix)]
+type GUID = [u8; 16];
+#[cfg(unix)]
+type HRESULT = i32;
+#[cfg(unix)]
+const GUID_XAxis: GUID = [0; 16];
+#[cfg(unix)]
+const GUID_YAxis: GUID = [0; 16];
+#[cfg(unix)]
+const GUID_ZAxis: GUID = [0; 16];
+#[cfg(unix)]
+const GUID_Button: GUID = [0; 16];
+
+#[cfg(windows)]
 use crate::hooks::{guarded, hook, vtable_entry};
 use crate::{bridge, keybinds, log, typing};
 
@@ -62,16 +81,21 @@ const DIDFT_BUTTON: u32 = 0x0c;
 type FormatObject = (u32, GUID, u32);
 const KEYBOARD_STATE_SIZE: u32 = 256;
 
+#[cfg(windows)]
 type GetDeviceStateFn = unsafe extern "system" fn(*mut c_void, u32, *mut c_void) -> HRESULT;
+#[cfg(windows)]
 type GetDeviceDataFn = unsafe extern "system" fn(*mut c_void, u32, *mut DIDEVICEOBJECTDATA, *mut u32, u32) -> HRESULT;
 
-/// The different `GetDeviceState`s and `GetDeviceData`s there can be: the ANSI and Unicode interfaces', each a
-/// mouse's and a keyboard's (they may share them or not; each different one gets its own hook).
+#[cfg(windows)]
 const HOOK_SLOTS: usize = 4;
+#[cfg(windows)]
 static ORIG_GET_DEVICE_STATE: [AtomicUsize; HOOK_SLOTS] = [const { AtomicUsize::new(0) }; HOOK_SLOTS];
+#[cfg(windows)]
 static ORIG_GET_DEVICE_DATA: [AtomicUsize; HOOK_SLOTS] = [const { AtomicUsize::new(0) }; HOOK_SLOTS];
+#[cfg(windows)]
 const STATE_DETOURS: [GetDeviceStateFn; HOOK_SLOTS] =
     [get_device_state_slot::<0>, get_device_state_slot::<1>, get_device_state_slot::<2>, get_device_state_slot::<3>];
+#[cfg(windows)]
 const DATA_DETOURS: [GetDeviceDataFn; HOOK_SLOTS] =
     [get_device_data_slot::<0>, get_device_data_slot::<1>, get_device_data_slot::<2>, get_device_data_slot::<3>];
 
@@ -138,6 +162,7 @@ impl MouseLayout {
     ///
     /// # Safety
     /// `device` is a live DirectInput device (the game's, as its own call passed it).
+    #[cfg(windows)]
     unsafe fn probe(device: *mut c_void) -> Self {
         // SAFETY: a live DirectInput device (the caller's contract).
         unsafe {
@@ -154,6 +179,11 @@ impl MouseLayout {
             );
             Self::from_objects(&objects)
         }
+    }
+
+    #[cfg(unix)]
+    unsafe fn probe(_device: *mut c_void) -> Self {
+        Self::default()
     }
 
     /// The layout of a data format holding these objects. Buttons are told apart by their order: DirectInput
@@ -187,6 +217,7 @@ impl MouseLayout {
 ///
 /// # Safety
 /// As [`MouseLayout::probe`].
+#[cfg(windows)]
 unsafe fn object_at(device: *mut c_void, offset: u32) -> Option<(GUID, u32)> {
     // SAFETY: a live DirectInput device (the caller's contract); the infos are locals with their sizes set, as
     // the calls require (all zeros is valid for them).
@@ -224,6 +255,7 @@ fn immediate_moves(last_buffered: Option<Instant>, now: Instant) -> bool {
 
 /// # Safety
 /// In the game's process, before the hooks are switched on ([`crate::hooks::enable_all`]).
+#[cfg(windows)]
 pub unsafe fn install() -> Result<(), String> {
     // SAFETY: throwaway DirectInput objects made here, only to read where their functions are: dinput8.dll's
     // own, hooked with detours of their exact signatures (below), and valid after the objects go.
@@ -280,7 +312,17 @@ pub unsafe fn install() -> Result<(), String> {
     }
 }
 
+/// Installs DirectInput hooks on Unix/Linux.
+///
+/// # Safety
+/// In the game's process.
+#[cfg(unix)]
+pub unsafe fn install() -> Result<(), String> {
+    Ok(())
+}
+
 /// The file of the module `address` is in (for the log: whose function a hook is on).
+#[cfg(windows)]
 fn module_of(address: usize) -> String {
     let mut module = HMODULE::default();
     let flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
@@ -297,6 +339,7 @@ fn module_of(address: usize) -> String {
 
 /// # Safety
 /// Called in place of the `GetDeviceState` hooked in slot `N`, with its arguments.
+#[cfg(windows)]
 unsafe extern "system" fn get_device_state_slot<const N: usize>(
     device: *mut c_void,
     size: u32,
@@ -308,6 +351,7 @@ unsafe extern "system" fn get_device_state_slot<const N: usize>(
 
 /// # Safety
 /// Called in place of the `GetDeviceData` hooked in slot `N`, with its arguments.
+#[cfg(windows)]
 unsafe extern "system" fn get_device_data_slot<const N: usize>(
     device: *mut c_void,
     object_size: u32,
@@ -321,6 +365,7 @@ unsafe extern "system" fn get_device_data_slot<const N: usize>(
 
 /// # Safety
 /// `original` holds a `GetDeviceState` trampoline; the rest are the game's arguments to it.
+#[cfg(windows)]
 unsafe fn get_device_state(original: &AtomicUsize, device: *mut c_void, size: u32, data: *mut c_void) -> HRESULT {
     // SAFETY: the trampoline was stored before the hooks were switched on (`install`, then `enable_all`), so it's
     // the original function, called with the caller's arguments as they came. The state is looked at only once
@@ -337,6 +382,7 @@ unsafe fn get_device_state(original: &AtomicUsize, device: *mut c_void, size: u3
 
 /// # Safety
 /// `original` holds a `GetDeviceData` trampoline; the rest are the game's arguments to it.
+#[cfg(windows)]
 unsafe fn get_device_data(
     original: &AtomicUsize,
     device: *mut c_void,
@@ -362,6 +408,7 @@ unsafe fn get_device_data(
 ///
 /// # Safety
 /// `state` is `size` bytes of `device`'s state, just filled by the original `GetDeviceState`.
+#[cfg(windows)]
 unsafe fn on_device_state(device: *mut c_void, size: u32, state: *mut u8) {
     // SAFETY: `state` is `size` bytes the original call just filled; every read and write stays within them
     // (each axis and button checked against `size`).
@@ -416,6 +463,7 @@ unsafe fn on_device_state(device: *mut c_void, size: u32, state: *mut u8) {
 /// # Safety
 /// The game's arguments after the original `GetDeviceData` filled them: `count` set, and `data` (if
 /// any) holding that many events of `object_size` bytes.
+#[cfg(windows)]
 unsafe fn on_device_data(
     device: *mut c_void,
     object_size: u32,
@@ -506,10 +554,21 @@ fn dik_taken(code: u32, down: bool) -> bool {
 /// The virtual-key code of the DirectInput keyboard's key `code`: its scan code (`DIK_` codes are scan codes,
 /// 0x80 set for an extended key), as the keyboard layout maps it, as a key message's `wParam` has it (Shift, Ctrl
 /// and Alt by their side).
+#[cfg(windows)]
 fn vk_of_dik(code: u32) -> u32 {
     let scancode = (code & 0x7f) | if code & 0x80 != 0 { 0xe000 } else { 0 };
     // SAFETY: a plain lookup, no pointers.
     unsafe { MapVirtualKeyW(scancode, MAPVK_VSC_TO_VK_EX) }
+}
+
+#[cfg(unix)]
+fn vk_of_dik(code: u32) -> u32 {
+    match code {
+        0x02 => 0x31,
+        0x38 => 0xa4,
+        0xb8 => 0xa5,
+        _ => code,
+    }
 }
 
 /// The bytes of a buffered event read: its object's offset and its value, the fields every version of the
@@ -669,6 +728,7 @@ fn interaction_key_held() -> bool {
 }
 
 /// Whether the interaction key is down.
+#[cfg(windows)]
 fn interaction_key_down() -> bool {
     let key = match bridge::get().map(|bridge| bridge.host.interaction_key.load(Ordering::Acquire)) {
         Some(key) if key != 0 => key,
@@ -676,6 +736,12 @@ fn interaction_key_down() -> bool {
     };
     // SAFETY: a plain query, no pointers.
     unsafe { GetAsyncKeyState(key as i32) as u16 & 0x8000 != 0 }
+}
+
+/// Whether the interaction key is down on Unix/Linux.
+#[cfg(unix)]
+fn interaction_key_down() -> bool {
+    false
 }
 
 /// Whether the interaction key is pressed once to use the screen and again to stop, rather than held.
@@ -746,6 +812,7 @@ fn pointer_block() -> Option<&'static PointerBlock> {
 ///
 /// # Safety
 /// `device` is a live DirectInput device (the game's, as its own call passed it).
+#[cfg(windows)]
 unsafe fn device_kind(device: *mut c_void) -> DeviceKind {
     // SAFETY: a live DirectInput device (the caller's contract); `caps` is a local with its size set.
     unsafe {
@@ -772,6 +839,11 @@ unsafe fn device_kind(device: *mut c_void) -> DeviceKind {
         kinds.insert(device as usize, kind);
         kind
     }
+}
+
+#[cfg(unix)]
+unsafe fn device_kind(_device: *mut c_void) -> DeviceKind {
+    DeviceKind::Other
 }
 
 #[cfg(test)]

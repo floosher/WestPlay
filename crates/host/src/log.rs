@@ -10,16 +10,23 @@
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::Write;
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(windows)]
 use westplay_shared::crash;
+#[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{FlushFileBuffers, WriteFile};
+#[cfg(windows)]
 use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, SetStdHandle};
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::Debug::{EXCEPTION_POINTERS, SetUnhandledExceptionFilter};
+#[cfg(windows)]
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 static FILE: Mutex<Option<File>> = Mutex::new(None);
@@ -42,8 +49,20 @@ pub fn dir() -> Option<PathBuf> {
 /// where the screens' browsers and the maps are, so WestPlay can write there whenever it runs at all). A
 /// player's ransomware protection (Windows Security's Controlled folder access, 2026-10-24) let the game write
 /// its `plugin.log` in Documents but not WestPlay: there was no `app.log`, and nothing said why.
+#[cfg(windows)]
 fn fallback_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("app.westplay").join("logs"))
+}
+
+#[cfg(unix)]
+fn fallback_dir() -> Option<PathBuf> {
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        let path = PathBuf::from(data_home);
+        if !path.as_os_str().is_empty() {
+            return Some(path.join("app.westplay").join("logs"));
+        }
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share").join("app.westplay").join("logs"))
 }
 
 /// Where this run's `app.log` is (the companion's About shows it); `None` if it couldn't be made anywhere.
@@ -59,6 +78,7 @@ pub fn init() {
     log_panics();
     let (made, refused) = open(dir(), fallback_dir());
     let Some((file, path)) = made else { return };
+    #[cfg(windows)]
     let handle = file.as_raw_handle() as isize;
     *FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
     let _ = PLACE.set(path);
@@ -66,7 +86,10 @@ pub fn init() {
     if let Some(refused) = refused {
         write(&format!("the log is kept here, as {refused}"));
     }
+    #[cfg(windows)]
     catch_crashes(handle);
+    #[cfg(unix)]
+    catch_crashes(0);
 }
 
 /// Keeps a native crash in the log, the file's `handle`: one that isn't a Rust panic ends WestPlay at once and
@@ -74,6 +97,7 @@ pub fn init() {
 /// nothing caught writes what it was and whose code it was in ([`on_crash`]); and Rust's own last words, a stack
 /// that overflowed or memory that couldn't be had (each ending the process without a panic), go to the standard
 /// error, which a release build (no console) points at the log.
+#[cfg(windows)]
 fn catch_crashes(handle: isize) {
     CRASH_FILE.store(handle, Ordering::Release);
     // SAFETY: `on_crash` stays valid for the process's life (this executable's own code); the standard error is
@@ -87,11 +111,15 @@ fn catch_crashes(handle: isize) {
     }
 }
 
+#[cfg(unix)]
+fn catch_crashes(_handle: isize) {}
+
 /// Windows' last chance for an exception nothing caught: its line in the log, then on to Windows' own handling
 /// (the process ends). No locks and no memory taken: the process is failing.
 ///
 /// # Safety
 /// Called by Windows with the exception's pointers.
+#[cfg(windows)]
 unsafe extern "system" fn on_crash(info: *const EXCEPTION_POINTERS) -> i32 {
     /// Windows' `EXCEPTION_CONTINUE_SEARCH`: its own handling goes on.
     const CONTINUE_SEARCH: i32 = 0;
@@ -152,15 +180,44 @@ fn log_panics() {
     }));
 }
 
+#[cfg(windows)]
+fn now_time() -> (u16, u16, u16, u16) {
+    // SAFETY: a plain query of the time.
+    let now = unsafe { GetLocalTime() };
+    (now.wHour, now.wMinute, now.wSecond, now.wMilliseconds)
+}
+
+#[cfg(unix)]
+fn now_time() -> (u16, u16, u16, u16) {
+    let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
+    // SAFETY: pointers to locals.
+    unsafe { libc::gettimeofday(&mut tv, std::ptr::null_mut()) };
+    let mut tm = libc::tm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        tm_gmtoff: 0,
+        tm_zone: std::ptr::null_mut(),
+    };
+    // SAFETY: pointers to locals.
+    unsafe { libc::localtime_r(&tv.tv_sec, &mut tm) };
+    (tm.tm_hour as u16, tm.tm_min as u16, tm.tm_sec as u16, (tv.tv_usec / 1000) as u16)
+}
+
 /// Prints `line`, and keeps it in the log with the time.
 pub fn write(line: &str) {
     println!("{line}");
     let mut file = FILE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(file) = file.as_mut() {
-        // SAFETY: a plain query of the time.
-        let now = unsafe { GetLocalTime() };
+        let (hour, minute, second, millis) = now_time();
         let _ =
-            writeln!(file, "{:02}:{:02}:{:02}.{:03}  {line}", now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+            writeln!(file, "{:02}:{:02}:{:02}.{:03}  {line}", hour, minute, second, millis);
     }
 }
 
@@ -183,6 +240,7 @@ mod tests {
     /// Each way WestPlay can end without a panic, in a process of its own (this test run again, told how by
     /// `WESTPLAY_CRASH_TEST`), as a release build has it (no standard error): its log says what ended it.
     #[test]
+    #[cfg(windows)]
     fn keeps_a_native_crash_and_rusts_last_words_in_the_file() {
         if let (Ok(how), Ok(path)) = (std::env::var("WESTPLAY_CRASH_TEST"), std::env::var("WESTPLAY_CRASH_LOG")) {
             crash_here(&how, Path::new(&path));
@@ -215,6 +273,7 @@ mod tests {
     }
 
     /// Ends this process `how`, its log at `path` as a release build's (no standard error of its own).
+    #[cfg(windows)]
     fn crash_here(how: &str, path: &Path) -> ! {
         let file = File::create(path).unwrap();
         let handle = file.as_raw_handle() as isize;

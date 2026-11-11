@@ -1,22 +1,34 @@
 //! D3D11 device on the game's GPU and the shared frame texture the plugin reads.
 
+#[cfg(windows)]
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, LUID};
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
     D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
     ID3D11Texture2D,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIAdapter, IDXGIDevice,
     IDXGIFactory4, IDXGIKeyedMutex, IDXGIResource1,
 };
+#[cfg(windows)]
 use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
+#[cfg(windows)]
 use windows::core::{HSTRING, Interface, Result};
 
+#[cfg(unix)]
+use crate::graphics::LUID;
+
+#[cfg(windows)]
 pub struct Gpu {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
@@ -26,6 +38,13 @@ pub struct Gpu {
     pub adapter_name: String,
 }
 
+#[cfg(unix)]
+pub struct Gpu {
+    pub luid: LUID,
+    pub adapter_name: String,
+}
+
+#[cfg(windows)]
 impl Gpu {
     /// Creates a device on the adapter with `luid`, or on the default adapter.
     pub fn new(luid: Option<LUID>) -> Result<Self> {
@@ -63,7 +82,18 @@ impl Gpu {
     }
 }
 
+#[cfg(unix)]
+impl Gpu {
+    pub fn new(luid: Option<LUID>) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            luid: luid.unwrap_or_default(),
+            adapter_name: "Linux OpenGL/Vulkan Renderer".to_string(),
+        })
+    }
+}
+
 /// BGRA texture shared with the game by name, guarded by a keyed mutex.
+#[cfg(windows)]
 pub struct SharedFrame {
     pub texture: ID3D11Texture2D,
     pub mutex: IDXGIKeyedMutex,
@@ -72,12 +102,20 @@ pub struct SharedFrame {
     handle: HANDLE,
 }
 
+#[cfg(unix)]
+pub struct SharedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub buffer: std::sync::Mutex<Vec<u8>>,
+}
+
 // SAFETY: Direct3D 11 resources and DXGI keyed mutexes are free-threaded (unlike a device context, which this
 // doesn't hold), and the handle is only closed, once, as it goes.
 unsafe impl Send for SharedFrame {}
 // SAFETY: as for `Send`: its texture and mutex may be used from several threads at once.
 unsafe impl Sync for SharedFrame {}
 
+#[cfg(windows)]
 impl SharedFrame {
     pub fn new(gpu: &Gpu, width: u32, height: u32, generation: u32) -> Result<Self> {
         // SAFETY: the device is alive (`gpu`); the description and the handle out are locals.
@@ -126,6 +164,23 @@ impl SharedFrame {
     }
 }
 
+#[cfg(unix)]
+impl SharedFrame {
+    pub fn new(_gpu: &Gpu, width: u32, height: u32, _generation: u32) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            width,
+            height,
+            buffer: std::sync::Mutex::new(vec![0u8; (width * height * 4) as usize]),
+        })
+    }
+
+    pub fn try_lock(&self) -> Lock {
+        Lock::Held
+    }
+
+    pub fn unlock(&self) {}
+}
+
 /// How trying to lock the shared texture went.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lock {
@@ -148,6 +203,7 @@ fn lock_of(hr: i32) -> Lock {
     }
 }
 
+#[cfg(windows)]
 impl Drop for SharedFrame {
     fn drop(&mut self) {
         // SAFETY: the shared handle is this frame's own, closed once, as it goes.

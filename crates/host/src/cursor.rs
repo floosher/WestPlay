@@ -16,9 +16,11 @@
 
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_BUFFER_PRECISION_8BPC_UNORM, D2D1_COLOR_INTERPOLATION_MODE_STRAIGHT,
@@ -27,10 +29,15 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Factory1,
     ID2D1Geometry, ID2D1GeometrySink, ID2D1GradientStopCollection, ID2D1PathGeometry,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGISurface};
+#[cfg(windows)]
 use windows::core::{Interface, Result};
+#[cfg(windows)]
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::gpu::Gpu;
@@ -293,6 +300,7 @@ fn shadow_at(outside: f32, sigma: f32) -> f32 {
 }
 
 /// Draws the cursor with Direct2D onto the frame shared with the game, on the host's device.
+#[cfg(windows)]
 pub struct Painter {
     factory: ID2D1Factory1,
     context: ID2D1DeviceContext,
@@ -300,6 +308,21 @@ pub struct Painter {
     _target: ID2D1Bitmap1,
 }
 
+#[cfg(unix)]
+pub struct Painter;
+
+#[cfg(unix)]
+impl Painter {
+    pub fn new(_gpu: &Gpu, _texture: &()) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self)
+    }
+
+    pub fn draw(&self, _look: &Look, _squeeze: f32) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 impl Painter {
     /// A painter for `texture` (the shared frame: a render target, B8G8R8A8), on `gpu`'s device.
     pub fn new(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<Self> {
@@ -425,6 +448,7 @@ impl Painter {
 }
 
 /// A layer seen `opacity` times, clipped to `mask` if given.
+#[cfg(windows)]
 fn layer(opacity: f32, mask: Option<ID2D1Geometry>) -> D2D1_LAYER_PARAMETERS1 {
     D2D1_LAYER_PARAMETERS1 {
         contentBounds: D2D_RECT_F { left: f32::MIN, top: f32::MIN, right: f32::MAX, bottom: f32::MAX },
@@ -438,6 +462,7 @@ fn layer(opacity: f32, mask: Option<ID2D1Geometry>) -> D2D1_LAYER_PARAMETERS1 {
 }
 
 /// Direct2D's colour for `colour`, its alpha straight (Direct2D's brushes and gradients premultiply themselves).
+#[cfg(windows)]
 fn straight(colour: Colour) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r: colour.r, g: colour.g, b: colour.b, a: colour.a }
 }

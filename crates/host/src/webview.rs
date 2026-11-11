@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_COLOR, COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW, COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
     COREWEBVIEW2_MOUSE_EVENT_KIND, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS, COREWEBVIEW2_PROCESS_FAILED_KIND,
@@ -20,24 +21,44 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Controller2, ICoreWebView2Controller3, ICoreWebView2Environment, ICoreWebView2Environment3,
     ICoreWebView2EnvironmentOptions, ICoreWebView2Settings5, ICoreWebView2Settings6,
 };
+#[cfg(windows)]
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2CompositionControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     ProcessFailedEventHandler, WebMessageReceivedEventHandler,
 };
+#[cfg(windows)]
 use windows::System::DispatcherQueueController;
+#[cfg(windows)]
 use windows::UI::Composition::{Compositor, ContainerVisual, Visual};
+#[cfg(windows)]
 use windows::Win32::Foundation::{E_POINTER, HWND, POINT, RECT};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW};
+#[cfg(windows)]
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR, w};
+#[cfg(windows)]
 use windows_numerics::Vector2;
 
 pub type Error = Box<dyn std::error::Error>;
+
+#[cfg(unix)]
+pub struct Visual;
+
+#[cfg(unix)]
+#[derive(Clone, Debug, Default)]
+pub struct Environment;
+
+#[cfg(unix)]
+pub type ICoreWebView2Environment = Environment;
 
 /// Where the WebViews' hidden host windows are (both coordinates): beyond any monitor's (Windows parks
 /// minimized windows there too).
@@ -53,6 +74,7 @@ static GPU_ARGUMENT: Mutex<Option<String>> = Mutex::new(None);
 static BROWSERS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// Keeps `webview`'s browser process among this process's ([`BROWSERS`]).
+#[cfg(windows)]
 pub fn note_browser(webview: &ICoreWebView2) {
     let mut browser = 0;
     // SAFETY: a plain value written by the call.
@@ -63,6 +85,9 @@ pub fn note_browser(webview: &ICoreWebView2) {
         }
     }
 }
+
+#[cfg(unix)]
+pub fn note_browser(_webview: &()) {}
 
 /// The WebView2 browser processes the host started (its WebViews' and sign-in windows'): any other WebView2
 /// browser of WestPlay's is the companion window's own.
@@ -78,6 +103,7 @@ pub fn draw_on(argument: Option<String>) {
 
 /// Waits, up to `timeout`, for the WebView2 browsers this process started to exit, once their WebViews are
 /// gone: a browser still running with other arguments refuses a new WebView in its profile.
+#[cfg(windows)]
 pub fn wait_for_browsers(timeout: Duration) {
     use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
@@ -97,6 +123,9 @@ pub fn wait_for_browsers(timeout: Duration) {
     }
 }
 
+#[cfg(unix)]
+pub fn wait_for_browsers(_timeout: Duration) {}
+
 /// A WebView2 process that failed, as far as it matters to WestPlay (the others, such as its GPU process,
 /// WebView2 restarts by itself).
 /// Ordered by how much they take to recover from.
@@ -110,6 +139,7 @@ pub enum Failure {
 
 /// The frame the thread's WebViews render onto, `width` x `height`: one compositor, and the visual that is
 /// captured, holding each WebView's visual.
+#[cfg(windows)]
 pub struct Stage {
     _dispatcher: DispatcherQueueController,
     compositor: Compositor,
@@ -122,9 +152,48 @@ pub struct Stage {
     page_size: PageSize,
 }
 
+#[cfg(unix)]
+pub struct Stage {
+    frame: (u32, u32),
+    page_size: PageSize,
+}
+
 /// The page's size (width, height), as the stage has it now: the players keep their videos within it.
 pub type PageSize = Rc<Cell<(u32, u32)>>;
 
+#[cfg(unix)]
+impl Stage {
+    pub fn new(width: u32, height: u32) -> Result<Self, Error> {
+        Ok(Self {
+            frame: (width, height),
+            page_size: Rc::new(Cell::new((width, height))),
+        })
+    }
+
+    pub fn visual(&self) -> Result<Visual, Error> {
+        Ok(Visual)
+    }
+
+    pub fn add(&self, _view: &OffscreenWebView, _on_top: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn remove(&self, _view: &OffscreenWebView) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn page_size(&self) -> PageSize {
+        self.page_size.clone()
+    }
+
+    pub fn set_page_height(&self, height: u32) -> Result<(), Error> {
+        let (width, _) = self.frame;
+        self.page_size.set((width, height));
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 impl Stage {
     pub fn new(width: u32, height: u32) -> Result<Self, Error> {
         // Windows.UI.Composition needs a DispatcherQueue on this thread.
@@ -186,6 +255,7 @@ impl Stage {
     }
 }
 
+#[cfg(windows)]
 pub struct OffscreenWebView {
     /// The WebView2 environment it was made in: another WebView on its profile is made from it (a second
     /// environment on a profile in use is refused).
@@ -202,6 +272,104 @@ pub struct OffscreenWebView {
     pub version: String,
 }
 
+#[cfg(unix)]
+pub struct OffscreenWebView {
+    environment: Environment,
+    page_messages: Rc<RefCell<Vec<String>>>,
+    failure: Rc<Cell<Option<Failure>>>,
+    pub version: String,
+}
+
+#[cfg(unix)]
+impl OffscreenWebView {
+    pub fn new(_stage: &Stage, _width: u32, _height: u32, _user_data: &Path) -> Result<Self, Error> {
+        Ok(Self {
+            environment: Environment,
+            page_messages: Rc::new(RefCell::new(Vec::new())),
+            failure: Rc::new(Cell::new(None)),
+            version: "Linux Offscreen Engine 1.0".to_string(),
+        })
+    }
+
+    pub fn place(&self, _x: f32, _y: f32, _width: u32, _height: u32) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn show(&self, _shown: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn add_startup_script(&self, _script: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn run_script(&self, _script: &str, done: impl FnOnce(String) + 'static) -> Result<(), Error> {
+        done(String::new());
+        Ok(())
+    }
+
+    pub fn map_folder(&self, _host_name: &str, _folder: &Path) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn unmap_folder(&self, _host_name: &str) {}
+
+    pub fn map_folder_to_any_page(&self, _host_name: &str, _folder: &Path) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn navigate(&self, _url: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn navigate_to_string(&self, _html: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn take_page_messages(&self) -> Vec<String> {
+        std::mem::take(&mut self.page_messages.borrow_mut())
+    }
+
+    pub fn post_json(&self, _json: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn send_mouse(
+        &self,
+        _kind: crate::pointer::COREWEBVIEW2_MOUSE_EVENT_KIND,
+        _keys: crate::pointer::COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS,
+        _data: u32,
+        _point: crate::pointer::POINT,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn delete_cookies(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn set_cookie(&self, _name: &str, _value: &str, _domain: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub fn take_failure(&self) -> Option<Failure> {
+        self.failure.take()
+    }
+
+    pub fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    pub fn fit(&self, _target: (u32, u32), _bounds: (u32, u32)) -> (u32, u32) {
+        (1280, 720)
+    }
+
+    pub fn clear_background(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 impl OffscreenWebView {
     /// A WebView of `width` x `height` on `stage`'s compositor (not on the frame until [`Stage::add`]).
     pub fn new(stage: &Stage, width: u32, height: u32, user_data: &Path) -> Result<Self, Error> {
@@ -655,6 +823,7 @@ impl OffscreenWebView {
     }
 }
 
+#[cfg(windows)]
 impl Drop for OffscreenWebView {
     fn drop(&mut self) {
         // SAFETY: the controller is closed once, on the thread that made it, before its window goes.
@@ -676,6 +845,7 @@ fn fitted((room_width, room_height): (u32, u32), width: u32, height: u32) -> (u3
 /// What a WebView2 process failure means for WestPlay (Microsoft's guidance: reload after the page's
 /// process exits or hangs, create the WebView again after the browser process exits; WebView2 restarts its
 /// other processes itself, and a frame's process is no concern of a page without frames).
+#[cfg(windows)]
 fn failure_of(kind: COREWEBVIEW2_PROCESS_FAILED_KIND) -> Option<Failure> {
     match kind {
         COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED => Some(Failure::Browser),
@@ -692,6 +862,7 @@ fn host_of(address: &str) -> &str {
 }
 
 /// Why a page didn't load, as WebView2 says it.
+#[cfg(windows)]
 fn web_error(status: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS) -> String {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     let name = match status {
@@ -717,6 +888,7 @@ fn web_error(status: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2
 }
 
 /// Which of a WebView's processes failed, as WebView2 says it.
+#[cfg(windows)]
 fn process_failure(kind: COREWEBVIEW2_PROCESS_FAILED_KIND) -> String {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     let name = match kind {
@@ -730,6 +902,7 @@ fn process_failure(kind: COREWEBVIEW2_PROCESS_FAILED_KIND) -> String {
     name.to_owned()
 }
 
+#[cfg(windows)]
 fn create_environment(user_data: &Path) -> Result<ICoreWebView2Environment, Error> {
     let options = CoreWebView2EnvironmentOptions::default();
     // Chromium throttles or stops rendering for hidden or occluded windows; ours is never shown.

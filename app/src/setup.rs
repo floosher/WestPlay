@@ -202,11 +202,23 @@ pub fn prepare_maps_again(folders: Option<Vec<String>>, store: State<'_, SetupSt
     store.0.game.prepare_maps_again(folders);
 }
 
+fn owner(window: &WebviewWindow) -> isize {
+    #[cfg(windows)]
+    {
+        window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        0
+    }
+}
+
 /// Asks the player where the game is (Windows' folder picker, titled `title`, in their language): the game
 /// there, `None` if they cancelled.
 #[tauri::command]
 pub async fn choose_game_folder(window: WebviewWindow, title: String) -> Result<Option<GameInfo>, String> {
-    let owner = window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0);
+    let owner = owner(&window);
     blocking(move || {
         let Some(dir) = pick::folder(owner, &title) else { return Ok(None) };
         Game::recognise(&dir).map(|game| Some(GameInfo::from(&game))).ok_or_else(|| "notTheGame".to_owned())

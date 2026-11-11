@@ -158,7 +158,15 @@ fn forget(
 }
 
 fn owner(window: &WebviewWindow) -> isize {
-    window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0)
+    #[cfg(windows)]
+    {
+        window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        0
+    }
 }
 
 /// Runs `work` off the async runtime's threads (pickers, files, decoding images).

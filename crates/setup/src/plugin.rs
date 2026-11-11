@@ -10,16 +10,25 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, WAIT_OBJECT_0};
+#[cfg(windows)]
 use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+#[cfg(windows)]
 use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::game::Game;
 
 /// The plugin's file, in the game's plugins folder.
+#[cfg(windows)]
 pub const FILE_NAME: &str = "westplay.dll";
+/// The plugin's file, in the game's plugins folder on Unix/Linux.
+#[cfg(unix)]
+pub const FILE_NAME: &str = "libwestplay.so";
 /// The argument WestPlay is started with, as administrator, to copy the plugin and nothing else.
 const COPY_ARGUMENT: &str = "--westplay-install-plugin";
 /// The same, to remove it and nothing else (uninstalling).
@@ -159,18 +168,33 @@ fn copy_into(ours: &Path, plugins: &Path) -> Result<PathBuf, InstallError> {
     Ok(target)
 }
 
-/// Installs the plugin with administrator rights: WestPlay starts itself again with them (Windows asks the
+/// Installs the plugin with administrator rights: WestPlay starts itself again with them (Windows/Linux asks the
 /// player), copies the plugin, and ends; this waits for it.
+#[cfg(windows)]
 pub fn install_as_administrator(game: &Game, ours: &Path) -> Result<(), InstallError> {
     as_administrator(format!("{COPY_ARGUMENT} {} {}", quoted(ours), quoted(&game.plugins_dir())))
 }
 
+/// Installs the plugin with administrator rights on Unix/Linux via pkexec/sudo.
+#[cfg(unix)]
+pub fn install_as_administrator(game: &Game, ours: &Path) -> Result<(), InstallError> {
+    as_administrator(&[COPY_ARGUMENT, &ours.to_string_lossy(), &game.plugins_dir().to_string_lossy()])
+}
+
 /// Removes the plugin with administrator rights, as [`install_as_administrator`] copies it.
+#[cfg(windows)]
 pub fn uninstall_as_administrator(game: &Game) -> Result<(), InstallError> {
     as_administrator(format!("{REMOVE_ARGUMENT} {}", quoted(&game.plugins_dir())))
 }
 
+/// Removes the plugin with administrator rights on Unix/Linux via pkexec/sudo.
+#[cfg(unix)]
+pub fn uninstall_as_administrator(game: &Game) -> Result<(), InstallError> {
+    as_administrator(&[REMOVE_ARGUMENT, &game.plugins_dir().to_string_lossy()])
+}
+
 /// WestPlay started again with administrator rights and `arguments` (Windows asks the player), waited for.
+#[cfg(windows)]
 fn as_administrator(arguments: String) -> Result<(), InstallError> {
     let exe = std::env::current_exe()?;
     let (exe, arguments) = (HSTRING::from(exe.as_os_str()), HSTRING::from(arguments));
@@ -206,6 +230,36 @@ fn as_administrator(arguments: String) -> Result<(), InstallError> {
     }
 }
 
+/// WestPlay started again with administrator rights on Unix/Linux using pkexec or sudo.
+#[cfg(unix)]
+fn as_administrator(arguments: &[&str]) -> Result<(), InstallError> {
+    let exe = std::env::current_exe()?;
+    let status = std::process::Command::new("pkexec")
+        .arg(&exe)
+        .args(arguments)
+        .status();
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => match status.code() {
+            Some(code) if code == EXIT_COPIED as i32 => Ok(()),
+            Some(code) if code == EXIT_IN_USE as i32 => Err(InstallError::InUse),
+            Some(126 | 127) => Err(InstallError::Declined),
+            _ => Err(InstallError::Io(io::Error::other("the plugin couldn't be copied or removed"))),
+        },
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let sudo_status = std::process::Command::new("sudo")
+                .arg(&exe)
+                .args(arguments)
+                .status();
+            match sudo_status {
+                Ok(s) if s.success() => Ok(()),
+                _ => Err(InstallError::Io(err)),
+            }
+        }
+        Err(err) => Err(InstallError::Io(err)),
+    }
+}
+
 /// For WestPlay's `main`, first thing: when it was started to copy (or remove) the plugin as administrator,
 /// does that and returns the exit code (WestPlay then ends); otherwise `None`, and it starts as usual.
 pub fn run_as_administrator_copy(args: &[String]) -> Option<i32> {
@@ -225,6 +279,7 @@ pub fn run_as_administrator_copy(args: &[String]) -> Option<i32> {
 }
 
 /// A path as one command-line argument.
+#[cfg(windows)]
 fn quoted(path: &Path) -> String {
     format!("\"{}\"", path.display())
 }
@@ -282,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn says_so_while_the_game_holds_the_plugin() {
         use windows::Win32::Foundation::FreeLibrary;
         use windows::Win32::System::LibraryLoader::LoadLibraryW;

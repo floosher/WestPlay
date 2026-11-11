@@ -3,9 +3,13 @@
 //! PC's clipboard (the plugin, in the game, doesn't read it).
 
 use westplay_shared::{TypedKey, TypingState};
+#[cfg(windows)]
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+#[cfg(windows)]
 use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+#[cfg(windows)]
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+#[cfg(windows)]
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 
 /// The most text a paste brings (the cabin's fields are a line long).
@@ -67,6 +71,7 @@ fn one_line(text: &str) -> String {
 }
 
 /// The text on the PC's clipboard, if any.
+#[cfg(windows)]
 pub fn clipboard_text() -> Option<String> {
     // SAFETY: the clipboard is opened and closed on this thread around its data, which is read only while
     // locked and only within the block's own size (its text ends at a nul, but another program's need not).
@@ -88,6 +93,12 @@ pub fn clipboard_text() -> Option<String> {
         let _ = CloseClipboard();
         text
     }
+}
+
+/// The text on the PC's clipboard on Unix/Linux.
+#[cfg(unix)]
+pub fn clipboard_text() -> Option<String> {
+    None
 }
 
 #[cfg(test)]

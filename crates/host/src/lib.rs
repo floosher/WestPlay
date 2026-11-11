@@ -43,9 +43,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+use graphics::LUID;
 use westplay_shared::{BridgeMapping, JobInfo, Keybind, Telemetry, TruckInfo, screen_layouts};
-use windows::Win32::Foundation::LUID;
+#[cfg(windows)]
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage};
 
 use capture::Capture;
@@ -235,6 +237,7 @@ struct Pipeline {
 /// Runs until `stop` is set. Blocks the calling thread, which becomes the WebView2 UI thread.
 pub fn run(mut config: Config, stop: Arc<AtomicBool>) -> Result<(), Error> {
     startup::mark("host: started");
+    #[cfg(windows)]
     // SAFETY: COM on this thread, once, before anything on it uses COM (WebView2 needs a single-threaded
     // apartment).
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
@@ -1666,11 +1669,17 @@ impl Liveness {
 /// Being the one WestPlay running in this Windows session: two would both drive the game's bridge (taking
 /// turns at its typed-key queue, which has room for one reader, and flipping the game between their frames).
 /// Held for as long as the app runs; a WestPlay that's killed lets go with its process.
+#[cfg(windows)]
 pub struct Instance(windows::Win32::Foundation::HANDLE);
 
+#[cfg(unix)]
+pub struct Instance(PathBuf);
+
+#[cfg(windows)]
 // SAFETY: a handle to a named mutex, only ever closed (once, as it goes), from whichever thread.
 unsafe impl Send for Instance {}
 
+#[cfg(windows)]
 impl Instance {
     /// Claims being the one WestPlay, or `None` if another is running.
     pub fn claim() -> Option<Self> {
@@ -1693,6 +1702,25 @@ impl Instance {
     }
 }
 
+#[cfg(unix)]
+impl Instance {
+    pub fn claim() -> Option<Self> {
+        let path = std::env::temp_dir().join("westplay.instance.lock");
+        if path.exists() {
+            if let Ok(pid_str) = std::fs::read_to_string(&path) {
+                if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                    if is_running(pid) {
+                        return None;
+                    }
+                }
+            }
+        }
+        let _ = std::fs::write(&path, std::process::id().to_string());
+        Some(Self(path))
+    }
+}
+
+#[cfg(windows)]
 impl Drop for Instance {
     fn drop(&mut self) {
         // SAFETY: the mutex is this `Instance`'s own, closed once, as it goes.
@@ -1702,7 +1730,15 @@ impl Drop for Instance {
     }
 }
 
+#[cfg(unix)]
+impl Drop for Instance {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Tells the player WestPlay is already running (a second one was started), in a message box.
+#[cfg(windows)]
 pub fn tell_already_running() {
     use windows::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     // SAFETY: a message box with static strings, no owner window.
@@ -1714,6 +1750,11 @@ pub fn tell_already_running() {
             MB_OK | MB_ICONINFORMATION,
         );
     }
+}
+
+#[cfg(unix)]
+pub fn tell_already_running() {
+    eprintln!("WestPlay is already running. Find it in the system tray.");
 }
 
 /// [`run`] stopped because WebView2's browser process exited, taking the cabin page's WebView with it: run it
@@ -1751,16 +1792,23 @@ fn log_startup(bridge: &BridgeMapping, pipeline: Option<&Pipeline>, screen_frame
 }
 
 /// Whether `window` (its handle) is the one in front, as Windows says.
+#[cfg(windows)]
 pub fn in_front(window: isize) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     // SAFETY: a plain question, with nothing passed.
     unsafe { GetForegroundWindow() }.0 as isize == window
 }
 
+#[cfg(unix)]
+pub fn in_front(_window: isize) -> bool {
+    false
+}
+
 /// Whether the process `game` (its pid; 0: no game) has a window showing: shown, not minimised, not cloaked
 /// (on another virtual desktop). In front or not: Lossless Scaling's window is in front of a game it scales,
 /// and a window over the game leaves it showing (owner 2026-10-28). Without a game, it counts as showing
 /// (nothing to be away from).
+#[cfg(windows)]
 fn is_shown(game: u32) -> bool {
     use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
@@ -1798,10 +1846,16 @@ fn is_shown(game: u32) -> bool {
     looking.shown
 }
 
+#[cfg(unix)]
+fn is_shown(_game: u32) -> bool {
+    true
+}
+
 /// Whether the process `game` (its pid) runs as administrator (elevated), as Task Manager's "Elevated" says: then
 /// Windows keeps WestPlay out of it, and the game's route, guidance and weather can't be read. WestPlay doesn't
 /// work with a game run that way (owner 2026-10-28: nothing that reaches into an elevated game); the player is
 /// told. A token WestPlay isn't let read counts as elevated: it's kept out all the same.
+#[cfg(windows)]
 fn is_elevated(game: u32) -> bool {
     use windows::Win32::Foundation::{CloseHandle, E_ACCESSDENIED, HANDLE};
     use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
@@ -1833,8 +1887,14 @@ fn is_elevated(game: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
+fn is_elevated(_game: u32) -> bool {
+    false
+}
+
 /// Whether the process `game` (its pid; 0: no game) is running: the plugin clears its pid as the game closes,
 /// and a game that crashed leaves it behind, its process gone.
+#[cfg(windows)]
 fn is_running(game: u32) -> bool {
     use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
@@ -1850,6 +1910,14 @@ fn is_running(game: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
+fn is_running(game: u32) -> bool {
+    if game == 0 {
+        return false;
+    }
+    std::path::Path::new(&format!("/proc/{game}")).exists()
+}
+
 /// TruckersMP's client modules (ETS2's, ATS's): one loaded in the game, it runs under TruckersMP.
 const TRUCKERSMP_MODULES: &[&str] = &["core_ets2mp.dll", "core_atsmp.dll"];
 /// How often a running game is looked at for TruckersMP until it's found.
@@ -1857,6 +1925,7 @@ const TRUCKERSMP_CHECK_EVERY: Duration = Duration::from_secs(5);
 
 /// Whether the process `pid` has one of the modules `names` loaded (names compared ignoring case). Only the
 /// game's list of modules is looked at, nothing in them.
+#[cfg(windows)]
 fn has_module(pid: u32, names: &[&str]) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -1880,6 +1949,11 @@ fn has_module(pid: u32, names: &[&str]) -> bool {
         let _ = CloseHandle(snapshot);
         found
     }
+}
+
+#[cfg(unix)]
+fn has_module(_pid: u32, _names: &[&str]) -> bool {
+    false
 }
 
 /// How often the players around the player under TruckersMP may go to the page.
@@ -2318,6 +2392,7 @@ fn same_luid(a: LUID, b: LUID) -> bool {
     a.LowPart == b.LowPart && a.HighPart == b.HighPart
 }
 
+#[cfg(windows)]
 fn pump_messages() {
     // SAFETY: this thread's own messages, each passed on as Windows hands it; `msg` is a local.
     unsafe {
@@ -2327,6 +2402,11 @@ fn pump_messages() {
             DispatchMessageW(&msg);
         }
     }
+}
+
+#[cfg(unix)]
+fn pump_messages() {
+    std::thread::sleep(Duration::from_millis(1));
 }
 
 /// A language tag as the cab asks the web players to answer in (`de`, `pt-PT`, `es-419`, `zh-Hans-CN`): a
@@ -2357,6 +2437,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_game_run_normally_isnt_elevated() {
         use windows::Win32::System::Threading::GetCurrentProcessId;
         assert!(!super::is_elevated(0));
@@ -2370,6 +2451,7 @@ mod tests {
     /// services elevated, the player's own programs not.
     #[test]
     #[ignore]
+    #[cfg(windows)]
     fn lists_which_processes_are_elevated() {
         use windows::Win32::System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -2389,6 +2471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_game_shows_while_its_window_does_in_front_or_not() {
         use windows::Win32::System::Threading::GetCurrentProcessId;
         use windows::Win32::UI::WindowsAndMessaging::{

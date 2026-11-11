@@ -59,7 +59,14 @@ fn companion_ready(window: WebviewWindow) {
 /// yes while the window comes up behind another.
 #[tauri::command]
 fn window_in_front(window: WebviewWindow) -> bool {
-    window.hwnd().is_ok_and(|window| westplay_host::in_front(window.0 as isize))
+    #[cfg(windows)]
+    {
+        window.hwnd().is_ok_and(|window| westplay_host::in_front(window.0 as isize))
+    }
+    #[cfg(not(windows))]
+    {
+        window.is_focused().unwrap_or(true)
+    }
 }
 
 /// The companion's page held its room still, or set it going again: for a log to tell what the room cost.

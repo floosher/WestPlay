@@ -1,11 +1,15 @@
 //! Web pages opened in the player's own browser, outside WestPlay.
 
+#[cfg(windows)]
 use windows::Win32::UI::Shell::ShellExecuteW;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+#[cfg(windows)]
 use windows::core::{HSTRING, PCWSTR, w};
 
 /// Opens `url` in the player's default browser. Only for addresses WestPlay itself names (each of the app's
 /// commands opens one fixed page), never one a page asks for.
+#[cfg(windows)]
 pub fn open(url: &str) {
     let address = HSTRING::from(url);
     // SAFETY: the operation and the address are null-terminated wide strings that outlive the call; the
@@ -15,5 +19,14 @@ pub fn open(url: &str) {
     let code = result.0 as usize;
     if code <= 32 {
         log!("[browser] {url} didn't open (ShellExecute {code})");
+    }
+}
+
+/// Opens `url` in the player's default browser on Unix/Linux.
+#[cfg(unix)]
+pub fn open(url: &str) {
+    let status = std::process::Command::new("xdg-open").arg(url).spawn();
+    if let Err(e) = status {
+        log!("[browser] {url} didn't open: {e}");
     }
 }

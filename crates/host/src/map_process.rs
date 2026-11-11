@@ -8,20 +8,25 @@
 //! was before 2.2.2, with Windows' allocator either way.
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 use westplay_setup::map_builder::{self, ALLOCATOR_VARIABLE, Failure, MIMALLOC, Request, Said};
+#[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
 };
 
 /// No console window for the builder (Windows' `CREATE_NO_WINDOW`).
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How many of the builder's last lines on its standard error are kept, for why it ended.
@@ -54,7 +59,9 @@ fn here(request: &Request, said: &mut dyn FnMut(Said)) -> Said {
 fn in_builder(builder: &Path, request: &Request, said: &mut dyn FnMut(Said)) -> Said {
     let failed = |error: String| Said::Failed(Failure::Error { error });
     let mut command = Command::new(builder);
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).creation_flags(CREATE_NO_WINDOW);
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
     if request.fast {
         command.env(ALLOCATOR_VARIABLE, MIMALLOC);
     } else {
@@ -64,7 +71,10 @@ fn in_builder(builder: &Path, request: &Request, said: &mut dyn FnMut(Said)) -> 
         Ok(child) => child,
         Err(error) => return failed(format!("the map builder couldn't start: {error}")),
     };
+    #[cfg(windows)]
     end_with_westplay(child.as_raw_handle());
+    #[cfg(unix)]
+    end_with_westplay();
     let asked = serde_json::to_string(request).map_err(std::io::Error::other).and_then(|line| {
         let mut stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("no standard input"))?;
         stdin.write_all(line.as_bytes())?;
@@ -113,6 +123,7 @@ fn in_builder(builder: &Path, request: &Request, said: &mut dyn FnMut(Said)) -> 
 
 /// Puts the process `child` in the job WestPlay's builders run in, which ends them once WestPlay's handle on it
 /// goes (WestPlay ending, or crashing): a builder never goes on alone.
+#[cfg(windows)]
 fn end_with_westplay(child: std::os::windows::io::RawHandle) {
     static JOB: OnceLock<Option<isize>> = OnceLock::new();
     let job = JOB.get_or_init(|| {
@@ -142,6 +153,9 @@ fn end_with_westplay(child: std::os::windows::io::RawHandle) {
         None => log!("map builder: WestPlay's job couldn't be made: a builder would outlive WestPlay"),
     }
 }
+
+#[cfg(unix)]
+fn end_with_westplay() {}
 
 #[cfg(test)]
 mod tests {

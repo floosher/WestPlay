@@ -14,27 +14,37 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+#[cfg(windows)]
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_MOUSE_EVENT_KIND, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
     ICoreWebView2Environment3,
 };
+#[cfg(windows)]
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
     CreateCoreWebView2CompositionControllerCompletedHandler, CursorChangedEventHandler,
     NavigationCompletedEventHandler, WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler,
 };
+#[cfg(windows)]
 use windows::UI::Composition::{Compositor, ContainerVisual, Desktop::DesktopWindowTarget};
+#[cfg(windows)]
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::ScreenToClient;
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetSystemMetrics, HCURSOR, HTCLIENT,
     IDC_ARROW, IsWindow, LoadCursorW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, SetCursor,
@@ -42,7 +52,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS,
     WM_SIZE, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
+#[cfg(windows)]
 use windows::core::{HSTRING, Interface, PWSTR, w};
+#[cfg(windows)]
 use windows_numerics::Vector2;
 
 use crate::webview;
@@ -98,12 +110,15 @@ pub const APPLE_MUSIC: Site = Site {
     not_yet: None,
     page_says: Some(include_str!("apple_music_sign_in.js")),
 };
+#[cfg(windows)]
 const CLASS: windows::core::PCWSTR = w!("WestPlaySignIn");
 const SIZE: (i32, i32) = (520, 760);
 /// Windows' message for the mouse leaving a window that asked to be told (its value, from WinUser.h).
+#[cfg(windows)]
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 /// An open window's WebView, for its window procedure: to size it, pass it the mouse and show its cursor.
+#[cfg(windows)]
 struct Hosted {
     window: isize,
     controller: ICoreWebView2Controller,
@@ -114,10 +129,12 @@ struct Hosted {
     tracking: Cell<bool>,
 }
 
+#[cfg(windows)]
 thread_local! {
     static HOSTED: RefCell<Vec<Rc<Hosted>>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(windows)]
 fn hosted(window: HWND) -> Option<Rc<Hosted>> {
     HOSTED.with(|hosted| hosted.borrow().iter().find(|h| h.window == window.0 as isize).cloned())
 }
@@ -133,6 +150,7 @@ pub enum Progress {
     Closed,
 }
 
+#[cfg(windows)]
 pub struct SignInWindow {
     window: HWND,
     hosted: Rc<Hosted>,
@@ -148,6 +166,26 @@ pub struct SignInWindow {
     said: Rc<Cell<bool>>,
 }
 
+#[cfg(unix)]
+pub struct SignInWindow {
+    _closed: bool,
+}
+
+#[cfg(unix)]
+impl SignInWindow {
+    pub fn open(_environment: &crate::webview::Environment, site: &'static Site) -> Result<Self, webview::Error> {
+        crate::browser::open(site.sign_in);
+        Ok(Self { _closed: false })
+    }
+
+    pub fn progress(&self) -> Progress {
+        Progress::Signing
+    }
+
+    pub fn bring_forward(&self) {}
+}
+
+#[cfg(windows)]
 impl SignInWindow {
     /// Opens `site`'s sign-in in a window on the desktop, in front, in `environment` (that of the service's page
     /// in WestPlay: its profile, so the sign-in is its).
@@ -379,6 +417,7 @@ fn says_signed_in(message: &str) -> bool {
 }
 
 /// The WebView over the whole window.
+#[cfg(windows)]
 unsafe fn fit(window: HWND, hosted: &Hosted) {
     let mut bounds = RECT::default();
     // SAFETY: the caller passes a live window and its WebView (see `fit`); `bounds` is a local.
@@ -391,6 +430,7 @@ unsafe fn fit(window: HWND, hosted: &Hosted) {
     }
 }
 
+#[cfg(windows)]
 impl Drop for SignInWindow {
     fn drop(&mut self) {
         let window = self.window.0 as isize;
@@ -406,6 +446,7 @@ impl Drop for SignInWindow {
     }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn window_proc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let Some(hosted) = hosted(window) else {
         // SAFETY: Windows' own handling of a message to this window, its arguments as they came.
@@ -444,6 +485,7 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, wparam: WPARAM
 /// A mouse message of the window, to the WebView: WebView2's mouse events are numbered as Windows' mouse
 /// messages, their keys as the messages' (the low word of `wparam`), and a wheel's turn or an X button is its
 /// high word. A button held keeps the mouse (a drag out of the window still ends in the page).
+#[cfg(windows)]
 unsafe fn pass_mouse(window: HWND, hosted: &Hosted, message: u32, wparam: WPARAM, lparam: LPARAM) {
     let mut point = POINT { x: (lparam.0 & 0xffff) as i16 as i32, y: ((lparam.0 >> 16) & 0xffff) as i16 as i32 };
     let keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS((wparam.0 & 0xffff) as i32);
@@ -569,6 +611,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn passes_mouse_messages_as_webview2_numbers_them() {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN,

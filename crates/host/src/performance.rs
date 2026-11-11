@@ -19,24 +19,36 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use webview2_com::GetProcessExtendedInfosCompletedHandler;
+#[cfg(windows)]
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_PROCESS_KIND, COREWEBVIEW2_PROCESS_KIND_BROWSER, COREWEBVIEW2_PROCESS_KIND_GPU,
     COREWEBVIEW2_PROCESS_KIND_RENDERER, ICoreWebView2Environment, ICoreWebView2Environment13,
     ICoreWebView2ProcessExtendedInfo, ICoreWebView2ProcessExtendedInfoCollection,
 };
+#[cfg(windows)]
 use westplay_setup::places::registry_text;
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, FILETIME};
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     DEVMODEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW,
     EnumDisplaySettingsW,
 };
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
+#[cfg(windows)]
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+#[cfg(windows)]
 use windows::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+#[cfg(windows)]
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR, w};
+
+#[cfg(unix)]
+use crate::webview::ICoreWebView2Environment;
 
 use crate::webview::OffscreenWebView;
 
@@ -206,6 +218,7 @@ impl Meter {
     }
 
     /// Asks WebView2 which of `profile`'s processes is which (it answers later, on this thread).
+    #[cfg(windows)]
     fn ask_parts(&self, profile: Profile, environment: &ICoreWebView2Environment) {
         // Older WebView2 runtimes can't say: their processes count as "other".
         let Ok(environment) = environment.cast::<ICoreWebView2Environment13>() else { return };
@@ -222,10 +235,14 @@ impl Meter {
         // SAFETY: the handler is a local for the call; WebView2 keeps its own reference to it.
         let _ = unsafe { environment.GetProcessExtendedInfos(&handler) };
     }
+
+    #[cfg(unix)]
+    fn ask_parts(&self, _profile: Profile, _environment: &ICoreWebView2Environment) {}
 }
 
 /// The Windows build: capture delivers frames differently from one to another (on Windows 10 at full rate over a
 /// page that doesn't change; on a player's PC, none).
+#[cfg(windows)]
 fn windows_build() -> String {
     let key = w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
     let build = registry_text(HKEY_LOCAL_MACHINE, key, w!("CurrentBuild"));
@@ -237,7 +254,13 @@ fn windows_build() -> String {
     }
 }
 
+#[cfg(unix)]
+fn windows_build() -> String {
+    "Linux (native ETS2)".to_string()
+}
+
 /// The displays in use, each with its rate: the cab's map draws more often on a fast one.
+#[cfg(windows)]
 fn displays() -> String {
     let mut found = Vec::new();
     let mut index = 0;
@@ -262,6 +285,11 @@ fn displays() -> String {
     found.join(", ")
 }
 
+#[cfg(unix)]
+fn displays() -> String {
+    "X11 / Wayland".to_string()
+}
+
 /// The renderer as the line says it: a software one named for what it means.
 fn described(renderer: String) -> String {
     let software = ["SwiftShader", "Microsoft Basic Render", "llvmpipe"];
@@ -273,6 +301,7 @@ fn described(renderer: String) -> String {
 }
 
 /// Each process of a WebView2 profile, and the part of WestPlay it is.
+#[cfg(windows)]
 fn parts_of(
     infos: &ICoreWebView2ProcessExtendedInfoCollection,
     profile: Profile,
@@ -314,6 +343,7 @@ fn page_part(hosts: &[String], cab_host: &str) -> &'static str {
     }
 }
 
+#[cfg(windows)]
 fn process_of(info: &ICoreWebView2ProcessExtendedInfo) -> Option<(u32, COREWEBVIEW2_PROCESS_KIND)> {
     // SAFETY: plain queries; `pid` and `kind` are locals the calls write.
     unsafe {
@@ -326,6 +356,7 @@ fn process_of(info: &ICoreWebView2ProcessExtendedInfo) -> Option<(u32, COREWEBVI
 }
 
 /// The hosts of the pages a renderer draws.
+#[cfg(windows)]
 fn frame_hosts(info: &ICoreWebView2ProcessExtendedInfo) -> Vec<String> {
     let mut hosts = Vec::new();
     // SAFETY: plain queries of WebView2's own collection; the strings it writes are freed by `CoTaskMemPWSTR`.
@@ -419,6 +450,7 @@ fn part_of(
 }
 
 /// Every process's id and its parent's, as Windows lists them now.
+#[cfg(windows)]
 fn process_tree() -> Vec<(u32, u32)> {
     let mut parents: Vec<(u32, u32)> = Vec::new();
     // SAFETY: a snapshot of the process list, walked with an entry sized as the calls require, then closed.
@@ -433,6 +465,11 @@ fn process_tree() -> Vec<(u32, u32)> {
         let _ = CloseHandle(snapshot);
     }
     parents
+}
+
+#[cfg(unix)]
+fn process_tree() -> Vec<(u32, u32)> {
+    Vec::new()
 }
 
 /// WestPlay's processes: its own and every one started from it (WebView2's), at any depth.
@@ -457,6 +494,7 @@ fn descendants(root: u32, parents: &[(u32, u32)]) -> Vec<u32> {
 }
 
 /// Each process's processor time so far (100 ns units); one that can't be opened is left out.
+#[cfg(windows)]
 fn processor_times(pids: &[u32]) -> HashMap<u32, u64> {
     let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
     pids.iter()
@@ -474,11 +512,17 @@ fn processor_times(pids: &[u32]) -> HashMap<u32, u64> {
         .collect()
 }
 
+#[cfg(unix)]
+fn processor_times(_pids: &[u32]) -> HashMap<u32, u64> {
+    HashMap::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
     fn this_pc_says_its_windows_build() {
         let build = windows_build();
         println!("this PC: Windows {build}; displays {}", displays());

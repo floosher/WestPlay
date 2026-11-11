@@ -19,18 +19,26 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use westplay_shared::BridgeMapping;
+#[cfg(windows)]
 use windows::Foundation::TypedEventHandler;
+#[cfg(windows)]
 use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
+#[cfg(windows)]
 use windows::Graphics::DirectX::DirectXPixelFormat;
+#[cfg(windows)]
 use windows::UI::Composition::Visual;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11DeviceContext,
     ID3D11Texture2D,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+#[cfg(windows)]
 use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
+#[cfg(windows)]
 use windows::core::{IInspectable, Interface, Result};
 
 use crate::cursor::{Look, Painter};
@@ -47,6 +55,7 @@ const POOL_FRAMES: i32 = 3;
 /// (as often as a fast game takes frames, and its fades smoothly).
 const CURSOR_INTERVAL: Duration = Duration::from_millis(6);
 
+#[cfg(windows)]
 pub struct Capture {
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
@@ -73,6 +82,47 @@ pub struct Capture {
     draw_failed: Cell<bool>,
 }
 
+#[cfg(unix)]
+pub struct Capture {
+    shared: Arc<SharedFrame>,
+    bridge: Arc<BridgeMapping>,
+    pub frames: Arc<AtomicU64>,
+    pub arrived: Arc<AtomicU64>,
+    pub dropped: Arc<AtomicU64>,
+    abandoned: AtomicBool,
+}
+
+#[cfg(unix)]
+impl Capture {
+    pub fn start(_gpu: &Gpu, _visual: &crate::webview::Visual, shared: Arc<SharedFrame>, bridge: Arc<BridgeMapping>) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            shared,
+            bridge,
+            frames: Arc::new(AtomicU64::new(0)),
+            arrived: Arc::new(AtomicU64::new(0)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            abandoned: AtomicBool::new(false),
+        })
+    }
+
+    pub fn draws_cursor(&self) -> bool {
+        false
+    }
+
+    pub fn broken(&self) -> bool {
+        self.abandoned.load(Ordering::Relaxed)
+    }
+
+    pub fn flush(&self, _cursor: Option<Look>, _squeeze: f32) {
+        if self.broken() {
+            return;
+        }
+        self.bridge.bridge().host.frame_seq.fetch_add(1, Ordering::Release);
+        self.frames.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(windows)]
 impl Capture {
     pub fn start(gpu: &Gpu, visual: &Visual, shared: Arc<SharedFrame>, bridge: Arc<BridgeMapping>) -> Result<Self> {
         let item = GraphicsCaptureItem::CreateFromVisual(visual)?;

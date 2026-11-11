@@ -17,10 +17,53 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use westplay_shared::{KEYBIND_COUNT, KEYBIND_HOLD_MS, Keybind, keybind_of};
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU,
     VK_RSHIFT, VK_SHIFT, VK_XBUTTON2,
 };
+
+#[cfg(unix)]
+const VK_SHIFT: u32 = 0x10;
+#[cfg(unix)]
+const VK_CONTROL: u32 = 0x11;
+#[cfg(unix)]
+const VK_MENU: u32 = 0x12;
+#[cfg(unix)]
+const VK_LSHIFT: u32 = 0xA0;
+#[cfg(unix)]
+const VK_RSHIFT: u32 = 0xA1;
+#[cfg(unix)]
+const VK_LCONTROL: u32 = 0xA2;
+#[cfg(unix)]
+const VK_RCONTROL: u32 = 0xA3;
+#[cfg(unix)]
+const VK_LMENU: u32 = 0xA4;
+#[cfg(unix)]
+const VK_RMENU: u32 = 0xA5;
+#[cfg(unix)]
+const VK_XBUTTON2: u32 = 0x06;
+
+#[cfg(windows)]
+fn vk(k: VIRTUAL_KEY) -> u32 {
+    k.0 as u32
+}
+
+#[cfg(unix)]
+fn vk(k: u32) -> u32 {
+    k
+}
+
+#[cfg(windows)]
+fn is_key_down(key: u32) -> bool {
+    // SAFETY: a plain query, no pointers.
+    unsafe { GetAsyncKeyState(key as i32) } as u16 & 0x8000 != 0
+}
+
+#[cfg(unix)]
+fn is_key_down(_key: u32) -> bool {
+    false
+}
 
 use crate::{bridge, input, log, typing};
 
@@ -37,8 +80,7 @@ pub fn on_frame() {
     // A press of WestPlay's whose release never came as a message (the window lost the keyboard): over once
     // the key is up.
     for (key, ours) in PRESSED_FOR_WESTPLAY.iter().enumerate() {
-        // SAFETY: a plain query, no pointers.
-        if ours.load(Ordering::Acquire) && unsafe { GetAsyncKeyState(key as i32) } as u16 & 0x8000 == 0 {
+        if ours.load(Ordering::Acquire) && !is_key_down(key as u32) {
             ours.store(false, Ordering::Release);
         }
     }
@@ -50,8 +92,7 @@ pub fn on_frame() {
             held[i] = Held::UP;
             continue;
         };
-        // SAFETY: a plain query, no pointers.
-        let down = unsafe { GetAsyncKeyState(key as i32) } as u16 & 0x8000 != 0;
+        let down = is_key_down(key);
         if keybind.holds() {
             match held[i].step(down, || in_game && counts(with_interaction_key), now) {
                 Some(Pressed::Press) => {
@@ -187,10 +228,6 @@ pub fn sided(key: u32, lparam: isize) -> u32 {
         k if k == vk(VK_MENU) => vk(if extended { VK_RMENU } else { VK_LMENU }),
         k => k,
     }
-}
-
-fn vk(key: VIRTUAL_KEY) -> u32 {
-    u32::from(key.0)
 }
 
 /// Mouse buttons' virtual-key codes: left, right, (cancel,) middle, back, forward.
