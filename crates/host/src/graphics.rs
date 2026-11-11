@@ -7,7 +7,7 @@
 //! started on takes starting WebView2 again (lib.rs ends the host's run with [`GpuChanged`]).
 
 #[cfg(windows)]
-use windows::Win32::Foundation::LUID;
+pub use windows::Win32::Foundation::LUID;
 #[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IDXGIAdapter1, IDXGIFactory1,

@@ -57,7 +57,7 @@ fn vk(k: u32) -> u32 {
 #[cfg(windows)]
 fn is_key_down(key: u32) -> bool {
     // SAFETY: a plain query, no pointers.
-    unsafe { GetAsyncKeyState(key as i32) } as u16 & 0x8000 != 0
+    (unsafe { GetAsyncKeyState(key as i32) } as u16) & 0x8000 != 0
 }
 
 #[cfg(unix)]

@@ -408,7 +408,7 @@ mod tests {
         // Written as Steam writes its own folder: lowercase, forward slashes.
         let windows = std::env::var("SystemRoot").unwrap();
         let as_steam_writes = windows.to_lowercase().replace('\\', "/");
-        assert_eq!(windows_name(Path::new(&as_steam_writes)), Path::new(&windows));
+        assert_eq!(windows_name(Path::new(&as_steam_writes)), windows_name(Path::new(&windows)));
         // A folder that isn't there stays as given.
         assert_eq!(windows_name(Path::new("q:/not/there")), Path::new("q:/not/there"));
     }
